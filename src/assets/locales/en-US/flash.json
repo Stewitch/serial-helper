@@ -1,0 +1,41 @@
+{
+  "title": "Flash",
+  "selectChip": "Select Chip",
+  "chipFamily": "Chip Family",
+  "chipVariant": "Chip Variant",
+  "selectFile": "Select Firmware File",
+  "dropFileHint": "Drop firmware file here, or click to select",
+  "supportedFormats": "Supports HEX, BIN, SREC formats",
+  "firmwareInfo": "Firmware Info",
+  "startFlash": "Start Flash",
+  "cancelFlash": "Cancel Flash",
+  "flashOptions": "Flash Options",
+  "verifyAfterFlash": "Verify after flash",
+  "autoResumeMonitor": "Auto resume monitor",
+  "eraseMode": "Erase Mode",
+  "eraseFull": "Full Erase",
+  "erasePage": "Page Erase",
+  "eraseNone": "No Erase",
+  "progress": {
+    "enteringBootloader": "Entering Bootloader...",
+    "erasing": "Erasing Flash...",
+    "writing": "Writing",
+    "verifying": "Verifying...",
+    "resetting": "Resetting chip...",
+    "complete": "Flash Complete",
+    "resumingMonitor": "Resuming monitor..."
+  },
+  "errors": {
+    "noResponse": "No response from chip, check BOOT0 is HIGH",
+    "verifyFailed": "Verification failed",
+    "toolNotFound": "{{tool}} not found, please install in Module Manager",
+    "cancelled": "Flash cancelled"
+  },
+  "log": {
+    "chipDetected": "Chip detected: {{chip}}",
+    "eraseDone": "Erase complete",
+    "writeProgress": "Writing: {{addr}} ({{current}}/{{total}} KB)",
+    "verifyDone": "Verification passed",
+    "duration": "Duration {{duration}}s"
+  }
+}

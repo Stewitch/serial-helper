@@ -1,0 +1,132 @@
+import { create } from "zustand";
+
+type ThemePreset = "system" | "light" | "dark";
+type LineEnding = "CRLF" | "LF" | "CR";
+
+interface SettingsStore {
+  theme: ThemePreset;
+  language: string;
+  fontSize: number;
+  uiScale: number;
+  timestampEnabled: boolean;
+  timestampFormat: string;
+  autoScroll: boolean;
+  lineEnding: LineEnding;
+  encoding: string;
+  autoReconnect: boolean;
+  monitorMaxLines: number;
+
+  setTheme: (theme: ThemePreset) => void;
+  setLanguage: (lang: string) => void;
+  setFontSize: (size: number) => void;
+  setUiScale: (scale: number) => void;
+  setTimestampEnabled: (enabled: boolean) => void;
+  setTimestampFormat: (format: string) => void;
+  setAutoScroll: (scroll: boolean) => void;
+  setLineEnding: (le: LineEnding) => void;
+  setEncoding: (enc: string) => void;
+  setAutoReconnect: (reconnect: boolean) => void;
+  applyTheme: () => void;
+  applyUiScale: () => void;
+  persist: () => void;
+}
+
+function loadSettings(): Partial<SettingsStore> {
+  try {
+    const raw = localStorage.getItem("serialhelper-settings");
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
+function getSystemTheme(): "light" | "dark" {
+  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+    return "dark";
+  }
+  return "light";
+}
+
+const saved = loadSettings();
+
+export const useSettingsStore = create<SettingsStore>((set, get) => ({
+  theme: (saved.theme as ThemePreset) || "system",
+  language: saved.language || "zh-CN",
+  fontSize: saved.fontSize || 13,
+  uiScale: saved.uiScale || 14,
+  timestampEnabled: saved.timestampEnabled ?? true,
+  timestampFormat: saved.timestampFormat || "HH:mm:ss.SSS",
+  autoScroll: saved.autoScroll ?? true,
+  lineEnding: (saved.lineEnding as LineEnding) || "CRLF",
+  encoding: saved.encoding || "UTF-8",
+  autoReconnect: saved.autoReconnect ?? true,
+  monitorMaxLines: saved.monitorMaxLines || 50000,
+
+  setTheme: (theme) => {
+    set({ theme });
+    get().applyTheme();
+    get().persist();
+  },
+  setLanguage: (language) => {
+    set({ language });
+    get().persist();
+  },
+  setFontSize: (fontSize) => {
+    set({ fontSize });
+    get().persist();
+  },
+  setUiScale: (uiScale) => {
+    set({ uiScale });
+    get().applyUiScale();
+    get().persist();
+  },
+  setTimestampEnabled: (timestampEnabled) => {
+    set({ timestampEnabled });
+    get().persist();
+  },
+  setTimestampFormat: (timestampFormat) => {
+    set({ timestampFormat });
+    get().persist();
+  },
+  setAutoScroll: (autoScroll) => {
+    set({ autoScroll });
+    get().persist();
+  },
+  setLineEnding: (lineEnding) => {
+    set({ lineEnding });
+    get().persist();
+  },
+  setEncoding: (encoding) => {
+    set({ encoding });
+    get().persist();
+  },
+  setAutoReconnect: (autoReconnect) => {
+    set({ autoReconnect });
+    get().persist();
+  },
+  applyTheme: () => {
+    const { theme } = get();
+    const resolved = theme === "system" ? getSystemTheme() : theme;
+    document.documentElement.classList.toggle("dark", resolved === "dark");
+  },
+  applyUiScale: () => {
+    const { uiScale } = get();
+    document.documentElement.style.fontSize = `${uiScale}px`;
+  },
+  persist: () => {
+    const state = get();
+    const toSave = {
+      theme: state.theme,
+      language: state.language,
+      fontSize: state.fontSize,
+      uiScale: state.uiScale,
+      timestampEnabled: state.timestampEnabled,
+      timestampFormat: state.timestampFormat,
+      autoScroll: state.autoScroll,
+      lineEnding: state.lineEnding,
+      encoding: state.encoding,
+      autoReconnect: state.autoReconnect,
+      monitorMaxLines: state.monitorMaxLines,
+    };
+    localStorage.setItem("serialhelper-settings", JSON.stringify(toSave));
+  },
+}));

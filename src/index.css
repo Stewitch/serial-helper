@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== Theme: Light (default) ===== */
+:root {
+  --color-surface: #faf9f6;
+  --color-surface-alt: #f2f0eb;
+  --color-surface-hover: #e8e5df;
+  --color-border: #e0dcd4;
+  --color-border-strong: #c4bfb5;
+  --color-text-primary: #1c1c1c;
+  --color-text-secondary: #5c5c5c;
+  --color-text-muted: #999999;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-monitor-rx: #16a34a;
+  --color-monitor-tx: #2563eb;
+  --color-monitor-timestamp: #9ca3af;
+  --color-monitor-system: #ca8a04;
+  --color-flash: #d946ef;
+  --color-flash-success: #16a34a;
+  --color-flash-error: #dc2626;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+}
+
+/* ===== Theme: Dark ===== */
+.dark {
+  --color-surface: #18181b;
+  --color-surface-alt: #222227;
+  --color-surface-hover: #2c2c32;
+  --color-border: #35353b;
+  --color-border-strong: #4a4a52;
+  --color-text-primary: #f4f4f5;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #63636b;
+  --color-accent: #60a5fa;
+  --color-accent-hover: #3b82f6;
+  --color-monitor-rx: #4ade80;
+  --color-monitor-tx: #60a5fa;
+  --color-monitor-timestamp: #71717a;
+  --color-monitor-system: #facc15;
+  --color-flash: #e879f9;
+  --color-flash-success: #4ade80;
+  --color-flash-error: #f87171;
+  --color-danger: #ef4444;
+  --color-danger-hover: #dc2626;
+}
+
+/* ===== Base Styles ===== */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+
+/* ===== Selection ===== */
+::selection { background-color: rgba(37, 99, 235, 0.2); color: var(--color-text-primary); }
+
+/* ===== Focus ===== */
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+  border-radius: 2px;
+}
+
+/* ===== Transitions ===== */
+.theme-transition {
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* ===== Drag region for Tauri title bar (bottom part only, clickable top) ===== */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}

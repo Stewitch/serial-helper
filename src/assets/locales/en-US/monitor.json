@@ -1,0 +1,20 @@
+{
+  "title": "Monitor",
+  "notConnected": "Not Connected",
+  "waitingForData": "Waiting for data...",
+  "rxBytes": "RX",
+  "txBytes": "TX",
+  "autoReconnect": "Auto Reconnect",
+  "saveLog": "Save Log",
+  "clearOutput": "Clear Output",
+  "pauseOutput": "Pause Output",
+  "resumeOutput": "Resume Output",
+  "sendHistory": "Send History",
+  "inputPlaceholder": "Type data to send...",
+  "hexInput": "HEX Input",
+  "portLost": "Disconnected",
+  "portLostDesc": "Port {{port}} disconnected, waiting for reconnect...",
+  "cancelReconnect": "Cancel Reconnect",
+  "portReconnected": "Port reconnected",
+  "noPortsFound": "No serial ports detected"
+}

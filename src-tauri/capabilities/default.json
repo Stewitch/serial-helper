@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/main/crates/tauri-utils/schema/capability.json",
+  "identifier": "default",
+  "description": "Default capabilities for SerialHelper",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "process:default"
+  ]
+}

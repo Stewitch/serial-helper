@@ -1,0 +1,20 @@
+{
+  "title": "监视器",
+  "notConnected": "未连接",
+  "waitingForData": "等待数据...",
+  "rxBytes": "RX",
+  "txBytes": "TX",
+  "autoReconnect": "自动重连",
+  "saveLog": "保存日志",
+  "clearOutput": "清空输出",
+  "pauseOutput": "暂停输出",
+  "resumeOutput": "继续输出",
+  "sendHistory": "发送历史",
+  "inputPlaceholder": "输入要发送的数据...",
+  "hexInput": "HEX 输入",
+  "portLost": "已断开",
+  "portLostDesc": "端口 {{port}} 已断开连接，等待重新插入...",
+  "cancelReconnect": "取消重连",
+  "portReconnected": "端口已重连",
+  "noPortsFound": "未检测到串口设备"
+}
