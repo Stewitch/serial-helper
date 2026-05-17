@@ -65,46 +65,48 @@ fn emit_progress(app: &AppHandle, stage: &str, percent: u8, message: &str) {
 }
 
 // ─── DTR/RTS Bootloader Entry ───
-fn pin_level(active_level: &str, active: bool) -> bool {
-    match active_level {
-        "low" => !active,  // active means set LOW → return false
-        _ => active,       // active means set HIGH → return true
-    }
-}
-
 fn dtr_rts_enter_bootloader(isp: &mut Stm32Isp, cfg: &DtrRtsConfig) -> Result<(), AppError> {
     use std::thread::sleep;
     use std::time::Duration;
 
-    // Find which pin is RESET and which is BOOT0
-    let (reset_pin, reset_active_lvl) = if cfg.rts_function == "reset" {
-        ("rts", cfg.rts_active_level.as_str())
-    } else if cfg.dtr_function == "reset" {
-        ("dtr", cfg.dtr_active_level.as_str())
-    } else {
-        ("none", "")
+    let set_pin = |isp: &mut Stm32Isp, pin: &str, level: bool| -> Result<(), AppError> {
+        match pin {
+            "rts" => isp.set_rts(level),
+            "dtr" => isp.set_dtr(level),
+            _ => Ok(()),
+        }
     };
 
-    let (boot0_pin, boot0_active_lvl) = if cfg.rts_function == "bootloader" {
-        ("rts", cfg.rts_active_level.as_str())
-    } else if cfg.dtr_function == "bootloader" {
-        ("dtr", cfg.dtr_active_level.as_str())
-    } else {
-        ("none", "")
-    };
+    fn active_level(cfg_level: &str, want_active: bool) -> bool {
+        match cfg_level {
+            "low" => !want_active,   // active-low: active=true → set LOW(false)
+            _ => want_active,         // active-high: active=true → set HIGH(true)
+        }
+    }
 
-    // Assert RESET + BOOT0
-    if reset_pin == "rts" { isp.set_rts(pin_level(reset_active_lvl, true))?; }
-    else if reset_pin == "dtr" { isp.set_dtr(pin_level(reset_active_lvl, true))?; }
+    // Resolve which pin does what + its active level
+    let reset_pin = if cfg.rts_function == "reset" { "rts" }
+        else if cfg.dtr_function == "reset" { "dtr" } else { "" };
+    let boot0_pin = if cfg.rts_function == "bootloader" { "rts" }
+        else if cfg.dtr_function == "bootloader" { "dtr" } else { "" };
+    let reset_lvl = if cfg.rts_function == "reset" { &cfg.rts_active_level }
+        else if cfg.dtr_function == "reset" { &cfg.dtr_active_level } else { "" };
+    let boot0_lvl = if cfg.rts_function == "bootloader" { &cfg.rts_active_level }
+        else if cfg.dtr_function == "bootloader" { &cfg.dtr_active_level } else { "" };
 
-    if boot0_pin == "rts" { isp.set_rts(pin_level(boot0_active_lvl, true))?; }
-    else if boot0_pin == "dtr" { isp.set_dtr(pin_level(boot0_active_lvl, true))?; }
+    // 1. De-assert everything first (clean start, ensures edges)
+    if reset_pin != "" { let _ = set_pin(isp, reset_pin, active_level(reset_lvl, false)); }
+    if boot0_pin != "" { let _ = set_pin(isp, boot0_pin, active_level(boot0_lvl, false)); }
+    sleep(Duration::from_millis(10));
 
+    // 2. Assert RESET + BOOT0 simultaneously
+    if reset_pin != "" { set_pin(isp, reset_pin, active_level(reset_lvl, true))?; }
+    if boot0_pin != "" { set_pin(isp, boot0_pin, active_level(boot0_lvl, true))?; }
     sleep(Duration::from_millis(100));
 
-    // Release RESET (BOOT0 stays active)
-    if reset_pin == "rts" { isp.set_rts(pin_level(reset_active_lvl, false))?; }
-    else if reset_pin == "dtr" { isp.set_dtr(pin_level(reset_active_lvl, false))?; }
+    // 3. Release RESET (BOOT0 stays asserted → chip boots into bootloader)
+    if reset_pin != "" { set_pin(isp, reset_pin, active_level(reset_lvl, false))?; }
+    sleep(Duration::from_millis(100));
 
     Ok(())
 }
@@ -113,28 +115,30 @@ fn dtr_rts_run_mode(isp: &mut Stm32Isp, cfg: &DtrRtsConfig) -> Result<(), AppErr
     use std::thread::sleep;
     use std::time::Duration;
 
-    // De-assert BOOT0 → normal mode
-    if cfg.rts_function == "bootloader" {
-        isp.set_rts(pin_level(&cfg.rts_active_level, false))?;
-    }
-    if cfg.dtr_function == "bootloader" {
-        isp.set_dtr(pin_level(&cfg.dtr_active_level, false))?;
+    fn active_level(cfg_level: &str, want_active: bool) -> bool {
+        match cfg_level { "low" => !want_active, _ => want_active }
     }
 
-    // Pulse RESET
-    let (reset_pin, reset_lvl) = if cfg.rts_function == "reset" {
-        ("rts", cfg.rts_active_level.as_str())
-    } else if cfg.dtr_function == "reset" {
-        ("dtr", cfg.dtr_active_level.as_str())
-    } else {
-        return Ok(());
-    };
+    // De-assert BOOT0, assert RESET, release RESET
+    let boot0_pin = if cfg.rts_function == "bootloader" { ("rts", &cfg.rts_active_level) }
+        else if cfg.dtr_function == "bootloader" { ("dtr", &cfg.dtr_active_level) }
+        else { return Ok(()) };
+    let reset_pin = if cfg.rts_function == "reset" { ("rts", &cfg.rts_active_level) }
+        else if cfg.dtr_function == "reset" { ("dtr", &cfg.dtr_active_level) }
+        else { ("", &String::new()) };
 
-    if reset_pin == "rts" { isp.set_rts(pin_level(reset_lvl, true))?; }
-    else { isp.set_dtr(pin_level(reset_lvl, true))?; }
-    sleep(Duration::from_millis(10));
-    if reset_pin == "rts" { isp.set_rts(pin_level(reset_lvl, false))?; }
-    else { isp.set_dtr(pin_level(reset_lvl, false))?; }
+    // BOOT0 off → normal mode
+    let lvl = active_level(boot0_pin.1, false);
+    if boot0_pin.0 == "rts" { isp.set_rts(lvl)?; } else { isp.set_dtr(lvl)?; }
+
+    if reset_pin.0 != "" {
+        // Pulse RESET
+        let lvl = active_level(reset_pin.1, true);
+        if reset_pin.0 == "rts" { isp.set_rts(lvl)?; } else { isp.set_dtr(lvl)?; }
+        sleep(Duration::from_millis(10));
+        let lvl = active_level(reset_pin.1, false);
+        if reset_pin.0 == "rts" { isp.set_rts(lvl)?; } else { isp.set_dtr(lvl)?; }
+    }
 
     Ok(())
 }
@@ -156,24 +160,37 @@ fn connect_and_enter(
         .map_err(|e| AppError::SerialError(format!("Cannot open {}: {}", port_name, e)))?;
 
     let mut isp = Stm32Isp::new(serial_port)?;
+    // Let the USB-to-serial adapter settle
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     if auto_reset {
         emit_progress(app, "bootloader", 10, "DTR/RTS: entering bootloader...");
         dtr_rts_enter_bootloader(&mut isp, dtr_rts)?;
     }
 
-    emit_progress(app, "bootloader", 15, "Sending sync byte (0x7F)...");
-    isp.enter_bootloader()?;
-
+    emit_progress(app, "bootloader", 15, "Sync (0x7F)...");
+    let app_clone = app.clone();
+    isp.enter_bootloader(&|bytes: &[u8]| {
+        let s: String = bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let _ = app_clone.emit("flash-progress", FlashProgressEvent {
+            stage: "sync".into(),
+            percent: 0,
+            message: format!("RX: {}", s),
+        });
+    })?;
+    emit_progress(app, "bootloader", 20, "Sync OK");
     Ok(isp)
 }
 
 // ─── Helper: detect chip ───
 fn detect_chip(isp: &mut Stm32Isp, app: &AppHandle) -> Result<ChipInfoResult, AppError> {
-    emit_progress(app, "detecting", 25, "Reading chip ID...");
+    emit_progress(app, "detecting", 25, "Sending Get (0x00)...");
 
+    // Get (0x00) MUST be first command after sync — returns version + supported cmds
+    let (version, _cmds) = isp.get_commands()?;
+
+    emit_progress(app, "detecting", 28, &format!("Bootloader v{}.{}, reading chip ID...", version >> 4, version & 0xF));
     let (device_id, pid) = isp.get_chip_id()?;
-    let (version, _cmds) = isp.get_bootloader_version()?;
 
     let chip_match = chips::find_chip_by_device_id(device_id);
 
@@ -408,7 +425,12 @@ pub async fn start_flash(
     if options.auto_reset {
         dtr_rts_enter_bootloader(&mut isp, &options.dtr_rts)?;
     }
-    isp.enter_bootloader()?;
+    isp.enter_bootloader(&|bytes: &[u8]| {
+        let s: String = bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let _ = app.emit("flash-progress", FlashProgressEvent {
+            stage: "sync".into(), percent: 0, message: format!("RX: {}", s),
+        });
+    })?;
 
     // 5. Write
     write_firmware(&mut isp, &firmware, &app)?;

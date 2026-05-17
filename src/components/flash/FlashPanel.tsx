@@ -119,7 +119,7 @@ export function FlashPanel() {
     addLog("[INFO] Connecting to detect chip...");
     try {
       const info = await invoke<ChipInfoResult>("read_chip_info", {
-        portName, baudRate, autoReset: dtrRtsEnabled,
+        portName, baudRate, autoReset: false,  // read-only: no reset
       });
       setChipInfo(info);
       addLog(`[OK] Device ID: ${info.device_id_hex} | Bootloader v${info.bootloader_version >> 4}.${info.bootloader_version & 0xF}`);
@@ -130,17 +130,17 @@ export function FlashPanel() {
       }
     } catch (e: any) { addLog(`[ERROR] ${e}`); }
     finally { setFlashing(false); }
-  }, [portName, baudRate, dtrRtsEnabled, addLog, clearLog]);
+  }, [portName, baudRate, addLog, clearLog]);
 
   const handleErase = useCallback(async () => {
     if (!portName || !confirm(t("erase") + " ALL flash? This cannot be undone.")) return;
     clearLog(); setFlashing(true); setFlashResult(null);
     try {
-      await invoke("erase_chip", { portName, baudRate, autoReset: dtrRtsEnabled });
+      await invoke("erase_chip", { portName, baudRate, autoReset: false });
       addLog("[OK] Flash erased");
     } catch (e: any) { addLog(`[ERROR] ${e}`); }
     finally { setFlashing(false); }
-  }, [portName, baudRate, dtrRtsEnabled, t, addLog, clearLog]);
+  }, [portName, baudRate, t, addLog, clearLog]);
 
   const handleReadFlash = useCallback(async () => {
     if (!portName || !chipInfo?.chip_match) return;
@@ -149,13 +149,13 @@ export function FlashPanel() {
     clearLog(); setFlashing(true);
     try {
       await invoke("read_flash", {
-        portName, baudRate, autoReset: dtrRtsEnabled,
+        portName, baudRate, autoReset: false,
         startAddress: chip.flash_start, size: chip.flash_kb * 1024, savePath,
       });
       addLog(`[OK] Flash saved to ${savePath}`);
     } catch (e: any) { addLog(`[ERROR] ${e}`); }
     finally { setFlashing(false); }
-  }, [portName, baudRate, dtrRtsEnabled, chipInfo, addLog, clearLog]);
+  }, [portName, baudRate, chipInfo, addLog, clearLog]);
 
   // ─── Flash ───
   const handleFlash = useCallback(async () => {
