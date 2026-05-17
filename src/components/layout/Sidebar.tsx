@@ -56,7 +56,6 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
   const handlePortClick = (portName: string) => {
     if (!isConnected) {
       setConfig({ port_name: portName });
-      onNavigate("monitor");
     }
   };
 

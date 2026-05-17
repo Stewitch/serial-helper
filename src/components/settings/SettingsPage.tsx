@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { Sun, Moon, Monitor, Type, Clock, ArrowDown, Link, Globe, AlignLeft } from "lucide-react";
+import { Sun, Moon, Monitor, Type, Clock, ArrowDown, Link, Globe, AlignLeft, Settings } from "lucide-react";
 import { Toggle } from "@/components/shared/Toggle";
 import { ThemeSelect } from "@/components/shared/ThemeSelect";
 import type { SelectOption } from "@/components/shared/ThemeSelect";
@@ -50,7 +50,8 @@ export function SettingsPage() {
     <div className="flex flex-col h-full overflow-auto">
       {/* Header */}
       <div className="flex items-center py-2.5 px-3 border-b border-border bg-surface-alt/50">
-        <h2 className="text-xs font-semibold text-text-primary tracking-wide">
+        <h2 className="text-xs font-semibold text-text-primary tracking-wide flex items-center gap-2">
+          <Settings size={14} className="text-accent" />
           {t("title")}
         </h2>
       </div>

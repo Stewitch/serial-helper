@@ -8,6 +8,7 @@ import { PortSelector } from "@/components/shared/PortSelector";
 import { BaudRateInput } from "@/components/shared/BaudRateInput";
 import { MonitorToolbar } from "./MonitorToolbar";
 import { SendInput } from "./SendInput";
+import { Monitor } from "lucide-react";
 import clsx from "clsx";
 
 interface LogLine {
@@ -191,6 +192,14 @@ export function MonitorView() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center py-2.5 px-3 border-b border-border bg-surface-alt/50">
+        <h2 className="text-xs font-semibold text-text-primary tracking-wide flex items-center gap-2">
+          <Monitor size={14} className="text-accent" />
+          {t("monitor:title")}
+        </h2>
+      </div>
+
       {/* Connection Toolbar */}
       <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
         <PortSelector

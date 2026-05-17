@@ -15,7 +15,7 @@ export function BaudRateInput({
 }: BaudRateInputProps) {
   const options: SelectOption[] = BAUD_RATES.map((rate) => ({
     value: String(rate),
-    label: rate.toLocaleString(),
+    label: String(rate),
   }));
 
   return (
