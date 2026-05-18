@@ -4,12 +4,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSerialStore } from "@/stores/serialStore";
 import { useAppStore } from "@/stores/appStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { PortSelector } from "@/components/shared/PortSelector";
 import { BaudRateInput } from "@/components/shared/BaudRateInput";
 import { ThemeSelect } from "@/components/shared/ThemeSelect";
 import { Toggle } from "@/components/shared/Toggle";
 import { Zap, Upload, XCircle, CheckCircle, Loader2, Cpu, Trash2, FileDown } from "lucide-react";
 import clsx from "clsx";
+import type { SerialConfig } from "@/types/serial";
 
 interface FirmwareInfo {
   filename: string;
@@ -41,6 +43,16 @@ interface ChipInfoResult {
   } | null;
 }
 
+interface ConnectOptions {
+  autoReset: boolean;
+  dtrRts: {
+    rtsFunction: string;
+    rtsActiveLevel: string;
+    dtrFunction: string;
+    dtrActiveLevel: string;
+  };
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   return `${(bytes / 1024).toFixed(1)} KB`;
@@ -50,7 +62,19 @@ const stageLabels: Record<string, string> = {
   parsing: "Parsing", connecting: "Opening", bootloader: "Bootloader",
   detecting: "Detecting", erasing: "Erasing", writing: "Writing",
   verifying: "Verifying", resetting: "Starting", reading: "Reading", complete: "Done",
+  resuming: "Resuming",
 };
+
+function extractError(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    const obj = e as Record<string, unknown>;
+    if (typeof obj.message === "string") return obj.message;
+    if (typeof obj.error === "string") return obj.error;
+    return JSON.stringify(e);
+  }
+  return String(e);
+}
 
 export function FlashPanel() {
   const { t } = useTranslation("flash");
@@ -75,15 +99,65 @@ export function FlashPanel() {
 
   const portName = useSerialStore((s) => s.config.port_name);
   const baudRate = useSerialStore((s) => s.config.baud_rate);
+  const serialConfig = useSerialStore((s) => s.config);
   const setConfig = useSerialStore((s) => s.setConfig);
+  const setConnected = useSerialStore((s) => s.setConnected);
   const isConnected = useSerialStore((s) => s.isConnected);
   const appState = useAppStore((s) => s.appState);
   const setState = useAppStore((s) => s.setState);
+  const autoResumeMonitor = useSettingsStore((s) => s.autoResumeMonitor);
+  const setAutoResumeMonitor = useSettingsStore((s) => s.setAutoResumeMonitor);
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
 
   const addLog = useCallback((msg: string) => setFlashLog((prev) => [...prev, msg]), []);
   const clearLog = useCallback(() => setFlashLog([]), []);
+  const connectOptions: ConnectOptions = {
+    autoReset: dtrRtsEnabled,
+    dtrRts: {
+      rtsFunction: rtsFunc,
+      rtsActiveLevel: rtsLevel,
+      dtrFunction: dtrFunc,
+      dtrActiveLevel: dtrLevel,
+    },
+  };
+
+  const prepareFlashPort = useCallback(async (): Promise<SerialConfig | null> => {
+    const shouldResume = isConnected || appState === "MONITORING";
+    const resumeConfig = shouldResume ? { ...serialConfig } : null;
+
+    if (shouldResume) {
+      try {
+        await invoke("close_port");
+      } catch {
+        /* ignore */
+      } finally {
+        setConnected(null);
+      }
+    }
+
+    return resumeConfig;
+  }, [isConnected, appState, serialConfig, setConnected]);
+
+  const resumeMonitor = useCallback(async (resumeConfig: SerialConfig | null) => {
+    if (!resumeConfig || !autoResumeMonitor || !optRunAfter) {
+      setState("IDLE");
+      return;
+    }
+
+    setState("RESUMING_MONITOR");
+    addLog(`[resuming] ${t("progress.resumingMonitor")}`);
+
+    try {
+      await invoke("open_port", { config: resumeConfig });
+      setConnected(resumeConfig.port_name);
+      addLog(`[OK] Monitor resumed on ${resumeConfig.port_name}`);
+      setState("MONITORING");
+    } catch (e) {
+      addLog(`[WARN] Failed to resume monitor: ${extractError(e)}`);
+      setState("IDLE");
+    }
+  }, [autoResumeMonitor, optRunAfter, addLog, setConnected, setState, t]);
 
   // ─── File handling ───
   const handleFile = useCallback(async (filePath: string) => {
@@ -117,55 +191,75 @@ export function FlashPanel() {
     if (!portName) return;
     clearLog(); setFlashing(true); setProgress(null);
     addLog("[INFO] Connecting to detect chip...");
+
+    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
+      if (event.payload.message) addLog(`[${event.payload.stage}] ${event.payload.message}`);
+    });
+
     try {
+      await prepareFlashPort();
+      setState("FLASHING");
       const info = await invoke<ChipInfoResult>("read_chip_info", {
-        portName, baudRate, autoReset: false,  // read-only: no reset
+        portName,
+        baudRate,
+        options: connectOptions,
       });
       setChipInfo(info);
       addLog(`[OK] Device ID: ${info.device_id_hex} | Bootloader v${info.bootloader_version >> 4}.${info.bootloader_version & 0xF}`);
       if (info.chip_match) {
         addLog(`[OK] ${info.chip_match.name} (${info.chip_match.flash_kb}KB Flash / ${info.chip_match.ram_kb}KB RAM)`);
       } else {
-        addLog(`[WARN] Unknown chip — flash anyway if firmware is correct`);
+        addLog(`[WARN] Unknown chip`);
       }
     } catch (e: any) { addLog(`[ERROR] ${e}`); }
-    finally { setFlashing(false); }
-  }, [portName, baudRate, addLog, clearLog]);
+    finally { setFlashing(false); setState("IDLE"); unlisten(); }
+  }, [portName, baudRate, addLog, clearLog, connectOptions, prepareFlashPort, setState]);
 
   const handleErase = useCallback(async () => {
-    if (!portName || !confirm(t("erase") + " ALL flash? This cannot be undone.")) return;
+    if (!portName || !confirm(t("erase") + " ALL flash?")) return;
     clearLog(); setFlashing(true); setFlashResult(null);
+
+    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
+      if (event.payload.message) addLog(`[${event.payload.stage}] ${event.payload.message}`);
+    });
+
     try {
-      await invoke("erase_chip", { portName, baudRate, autoReset: false });
+      await prepareFlashPort();
+      setState("FLASHING");
+      await invoke("erase_chip", { portName, baudRate, options: connectOptions });
       addLog("[OK] Flash erased");
     } catch (e: any) { addLog(`[ERROR] ${e}`); }
-    finally { setFlashing(false); }
-  }, [portName, baudRate, t, addLog, clearLog]);
+    finally { setFlashing(false); setState("IDLE"); unlisten(); }
+  }, [portName, baudRate, t, addLog, clearLog, connectOptions, prepareFlashPort, setState]);
 
   const handleReadFlash = useCallback(async () => {
     if (!portName || !chipInfo?.chip_match) return;
     const chip = chipInfo.chip_match;
     const savePath = `${chip.name}_flash_backup.bin`;
     clearLog(); setFlashing(true);
+
+    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
+      if (event.payload.message) addLog(`[${event.payload.stage}] ${event.payload.message}`);
+    });
+
     try {
+      await prepareFlashPort();
+      setState("FLASHING");
       await invoke("read_flash", {
-        portName, baudRate, autoReset: false,
+        portName, baudRate, options: connectOptions,
         startAddress: chip.flash_start, size: chip.flash_kb * 1024, savePath,
       });
       addLog(`[OK] Flash saved to ${savePath}`);
     } catch (e: any) { addLog(`[ERROR] ${e}`); }
-    finally { setFlashing(false); }
-  }, [portName, baudRate, chipInfo, addLog, clearLog]);
+    finally { setFlashing(false); setState("IDLE"); unlisten(); }
+  }, [portName, baudRate, chipInfo, addLog, clearLog, connectOptions, prepareFlashPort, setState]);
 
   // ─── Flash ───
   const handleFlash = useCallback(async () => {
     if (!firmwarePath || !portName || !firmware) return;
     setFlashing(true); clearLog(); setProgress(null); setFlashResult(null);
     setState("FLASHING");
-
-    if (isConnected || appState === "MONITORING") {
-      try { await invoke("close_port"); } catch { /* ignore */ }
-    }
+    let resumeConfig: SerialConfig | null = null;
 
     const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
       setProgress(event.payload);
@@ -174,22 +268,28 @@ export function FlashPanel() {
     unlistenRef.current = unlisten;
 
     try {
+      resumeConfig = await prepareFlashPort();
       await invoke("start_flash", {
         firmwarePath, portName, baudRate,
         options: {
           verify: optVerify, runAfter: optRunAfter, autoReset: dtrRtsEnabled,
-          dtrRts: { rtsFunction: rtsFunc, rtsActiveLevel: rtsLevel, dtrFunction: dtrFunc, dtrActiveLevel: dtrLevel },
+          dtrRts: connectOptions.dtrRts,
         },
       });
       setFlashResult("success");
+      await resumeMonitor(resumeConfig);
     } catch (e: any) {
       setFlashResult("error");
       addLog(`[ERROR] ${e}`);
+      setState("FLASH_ERROR");
     } finally {
-      setFlashing(false); setState("IDLE");
+      setFlashing(false);
+      if (useAppStore.getState().appState === "FLASHING") {
+        setState("IDLE");
+      }
       unlisten(); unlistenRef.current = null;
     }
-  }, [firmwarePath, portName, baudRate, firmware, isConnected, appState, optVerify, optRunAfter, dtrRtsEnabled, addLog, clearLog, setState]);
+  }, [firmwarePath, portName, baudRate, firmware, optVerify, optRunAfter, dtrRtsEnabled, addLog, clearLog, setState, connectOptions, prepareFlashPort, resumeMonitor]);
 
   const canFlash = firmwarePath && portName && !flashing;
   const canHelper = portName && !flashing;
@@ -252,6 +352,10 @@ export function FlashPanel() {
           <div className="flex items-center gap-2">
             <Toggle active={optRunAfter} onClick={() => setOptRunAfter(!optRunAfter)} />
             <span className="text-[0.6875rem] text-text-secondary">{t("runAfter")}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Toggle active={autoResumeMonitor} onClick={() => setAutoResumeMonitor(!autoResumeMonitor)} />
+            <span className="text-[0.6875rem] text-text-secondary">{t("autoResumeMonitor")}</span>
           </div>
         </div>
 

@@ -14,6 +14,7 @@ interface SettingsStore {
   lineEnding: LineEnding;
   encoding: string;
   autoReconnect: boolean;
+  autoResumeMonitor: boolean;
   monitorMaxLines: number;
 
   setTheme: (theme: ThemePreset) => void;
@@ -26,6 +27,7 @@ interface SettingsStore {
   setLineEnding: (le: LineEnding) => void;
   setEncoding: (enc: string) => void;
   setAutoReconnect: (reconnect: boolean) => void;
+  setAutoResumeMonitor: (resume: boolean) => void;
   applyTheme: () => void;
   applyUiScale: () => void;
   persist: () => void;
@@ -59,6 +61,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   lineEnding: (saved.lineEnding as LineEnding) || "CRLF",
   encoding: saved.encoding || "UTF-8",
   autoReconnect: saved.autoReconnect ?? true,
+  autoResumeMonitor: saved.autoResumeMonitor ?? true,
   monitorMaxLines: saved.monitorMaxLines || 50000,
 
   setTheme: (theme) => {
@@ -103,6 +106,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ autoReconnect });
     get().persist();
   },
+  setAutoResumeMonitor: (autoResumeMonitor) => {
+    set({ autoResumeMonitor });
+    get().persist();
+  },
   applyTheme: () => {
     const { theme } = get();
     const resolved = theme === "system" ? getSystemTheme() : theme;
@@ -125,6 +132,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       lineEnding: state.lineEnding,
       encoding: state.encoding,
       autoReconnect: state.autoReconnect,
+      autoResumeMonitor: state.autoResumeMonitor,
       monitorMaxLines: state.monitorMaxLines,
     };
     localStorage.setItem("serialhelper-settings", JSON.stringify(toSave));

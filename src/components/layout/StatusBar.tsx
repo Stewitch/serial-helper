@@ -29,6 +29,8 @@ function statusDot(appState: string): string {
       return "bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]";
     case "FLASHING":
       return "bg-flash shadow-[0_0_5px_rgba(217,70,239,0.5)] animate-pulse";
+    case "RESUMING_MONITOR":
+      return "bg-accent shadow-[0_0_5px_rgba(59,130,246,0.5)] animate-pulse";
     case "FLASH_ERROR":
     case "PORT_LOST":
       return "bg-flash-error shadow-[0_0_5px_rgba(220,38,38,0.5)]";
@@ -48,6 +50,7 @@ export function StatusBar() {
     switch (appState) {
       case "MONITORING": return "LIVE";
       case "FLASHING": return "FLASH";
+      case "RESUMING_MONITOR": return "RESUME";
       case "FLASH_ERROR": return "ERROR";
       case "PORT_LOST": return "LOST";
       case "READY_TO_FLASH": return "READY";

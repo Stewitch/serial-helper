@@ -16,7 +16,14 @@
       "WebSearch",
       "WebFetch(domain:browse.dgit.debian.org)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:manpages.debian.org)"
+      "WebFetch(domain:manpages.debian.org)",
+      "Bash(pip install *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m pip install Pillow)",
+      "Bash(python3 -c \"from PIL import Image; print\\('OK'\\)\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/bluerobotics/stm32flash-code/master/init.c\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/bluerobotics/stm32flash-code/master/stm32.c\")",
+      "Bash(where stm32flash *)"
     ]
   }
 }

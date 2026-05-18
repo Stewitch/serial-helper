@@ -29,6 +29,7 @@ pub struct ChipInfoResult {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DtrRtsConfig {
     pub rts_function: String,       // "none" | "reset" | "bootloader"
     pub rts_active_level: String,   // "low" | "high"
@@ -48,9 +49,18 @@ impl Default for DtrRtsConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FlashOptions {
     pub verify: bool,
     pub run_after: bool,
+    pub auto_reset: bool,
+    #[serde(default)]
+    pub dtr_rts: DtrRtsConfig,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectOptions {
     pub auto_reset: bool,
     #[serde(default)]
     pub dtr_rts: DtrRtsConfig,
@@ -155,6 +165,8 @@ fn connect_and_enter(
 
     let serial_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_secs(5))
+        .parity(serialport::Parity::Even)
+        .stop_bits(serialport::StopBits::One)
         .flow_control(serialport::FlowControl::None)
         .open()
         .map_err(|e| AppError::SerialError(format!("Cannot open {}: {}", port_name, e)))?;
@@ -282,10 +294,19 @@ pub async fn read_chip_info(
     app: AppHandle,
     port_name: String,
     baud_rate: u32,
-    auto_reset: bool,
+    options: Option<ConnectOptions>,
 ) -> Result<ChipInfoResult, AppError> {
-    let dtr_rts = DtrRtsConfig::default();
-    let mut isp = connect_and_enter(&port_name, baud_rate, auto_reset, &dtr_rts, &app)?;
+    let options = options.unwrap_or(ConnectOptions {
+        auto_reset: false,
+        dtr_rts: DtrRtsConfig::default(),
+    });
+    let mut isp = connect_and_enter(
+        &port_name,
+        baud_rate,
+        options.auto_reset,
+        &options.dtr_rts,
+        &app,
+    )?;
     detect_chip(&mut isp, &app)
 }
 
@@ -295,10 +316,19 @@ pub async fn erase_chip(
     app: AppHandle,
     port_name: String,
     baud_rate: u32,
-    auto_reset: bool,
+    options: Option<ConnectOptions>,
 ) -> Result<(), AppError> {
-    let dtr_rts = DtrRtsConfig::default();
-    let mut isp = connect_and_enter(&port_name, baud_rate, auto_reset, &dtr_rts, &app)?;
+    let options = options.unwrap_or(ConnectOptions {
+        auto_reset: false,
+        dtr_rts: DtrRtsConfig::default(),
+    });
+    let mut isp = connect_and_enter(
+        &port_name,
+        baud_rate,
+        options.auto_reset,
+        &options.dtr_rts,
+        &app,
+    )?;
 
     let _chip = detect_chip(&mut isp, &app)?;
 
@@ -315,13 +345,22 @@ pub async fn read_flash(
     app: AppHandle,
     port_name: String,
     baud_rate: u32,
-    auto_reset: bool,
+    options: Option<ConnectOptions>,
     start_address: u32,
     size: u32,
     save_path: String,
 ) -> Result<(), AppError> {
-    let dtr_rts = DtrRtsConfig::default();
-    let mut isp = connect_and_enter(&port_name, baud_rate, auto_reset, &dtr_rts, &app)?;
+    let options = options.unwrap_or(ConnectOptions {
+        auto_reset: false,
+        dtr_rts: DtrRtsConfig::default(),
+    });
+    let mut isp = connect_and_enter(
+        &port_name,
+        baud_rate,
+        options.auto_reset,
+        &options.dtr_rts,
+        &app,
+    )?;
 
     emit_progress(&app, "reading", 0, &format!(
         "Reading {:#010X} - {:#010X} ({} bytes)...",
