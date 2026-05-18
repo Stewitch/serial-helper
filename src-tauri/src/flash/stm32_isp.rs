@@ -19,6 +19,7 @@ const CMD_READ_MEMORY: u8 = 0x11;
 const CMD_GO: u8 = 0x21;
 const CMD_WRITE_MEMORY: u8 = 0x31;
 const CMD_ERASE: u8 = 0x43;
+const CMD_EXTENDED_ERASE: u8 = 0x44;
 
 const ACK: u8 = 0x79;
 const NACK: u8 = 0x1F;
@@ -95,23 +96,6 @@ impl Stm32Isp {
         }
     }
 
-    fn drain_input(&mut self) -> AppResult<Vec<u8>> {
-        self.set_timeout(30)?;
-
-        let mut drained: Vec<u8> = self.pending_rx.drain(..).collect();
-        let mut buf = [0u8; 64];
-        loop {
-            match self.port.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => drained.extend_from_slice(&buf[..n]),
-                Err(_) => break,
-            }
-        }
-
-        self.set_timeout(DEFAULT_TIMEOUT_MS)?;
-        Ok(drained)
-    }
-
     fn stash_pending<I>(&mut self, bytes: I)
     where
         I: IntoIterator<Item = u8>,
@@ -164,10 +148,14 @@ impl Stm32Isp {
         self.expect_ack(context)
     }
 
-    /// Enter bootloader: send continuous bursts of 0x7F and watch for
-    /// bootloader-only responses. This matches boards that emit stray app bytes
-    /// before the ROM responds, and boards that answer repeated syncs with NACKs.
-    pub fn enter_bootloader(&mut self, on_bytes: &dyn Fn(&[u8])) -> AppResult<()> {
+    /// Enter bootloader and wait up to `timeout` for a sync response.
+    /// This matches boards that emit stray app bytes before the ROM responds,
+    /// and boards that answer repeated syncs with NACKs.
+    pub fn enter_bootloader_with_timeout(
+        &mut self,
+        timeout: Duration,
+        on_bytes: &dyn Fn(&[u8]),
+    ) -> AppResult<()> {
         let mut all_bytes = Vec::new();
         self.set_timeout(20)?;
 
@@ -199,7 +187,7 @@ impl Stm32Isp {
                 }
             }
 
-            if start.elapsed() > Duration::from_secs(15) {
+            if start.elapsed() > timeout {
                 break;
             }
         }
@@ -207,7 +195,8 @@ impl Stm32Isp {
         self.set_timeout(DEFAULT_TIMEOUT_MS)?;
         on_bytes(&all_bytes);
         Err(AppError::FlashError(format!(
-            "No bootloader after 15s. Saw: {}",
+            "No bootloader after {:.1}s. Saw: {}",
+            timeout.as_secs_f64(),
             all_bytes
                 .iter()
                 .map(|b| format!("{:02x}", b))
@@ -216,10 +205,12 @@ impl Stm32Isp {
         )))
     }
 
+    pub fn enter_bootloader(&mut self, on_bytes: &dyn Fn(&[u8])) -> AppResult<()> {
+        self.enter_bootloader_with_timeout(Duration::from_secs(15), on_bytes)
+    }
+
     fn send_command(&mut self, cmd: u8) -> AppResult<()> {
         for attempt in 0..3 {
-            let drained = self.drain_input()?;
-
             self.port.write_all(&[cmd, !cmd])?;
             self.port.flush()?;
 
@@ -227,7 +218,7 @@ impl Stm32Isp {
                 Ok(ACK) => return Ok(()),
                 Ok(first) => {
                     let mut response = vec![first];
-                    let trailing = self.wait_for_quiet(12, 80)?;
+                    let trailing = self.wait_for_quiet(2, 20)?;
                     response.extend_from_slice(&trailing);
 
                     if let Some(ack_pos) = response.iter().position(|&byte| byte == ACK) {
@@ -241,38 +232,20 @@ impl Stm32Isp {
                         continue;
                     }
 
-                    let drained_hex = if drained.is_empty() {
-                        "none".into()
-                    } else {
-                        drained
-                            .iter()
-                            .map(|value| format!("{:02x}", value))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    };
                     let response_hex = response
                         .iter()
                         .map(|value| format!("{:02x}", value))
                         .collect::<Vec<_>>()
                         .join(" ");
                     return Err(AppError::FlashError(format!(
-                        "Cmd {:02x} bad response [{}] (want {:02x}). Drained: {}",
-                        cmd, response_hex, ACK, drained_hex
+                        "Cmd {:02x} bad response [{}] (want {:02x})",
+                        cmd, response_hex, ACK
                     )));
                 }
                 Err(_) => {
-                    let drained_hex = if drained.is_empty() {
-                        "none".into()
-                    } else {
-                        drained
-                            .iter()
-                            .map(|value| format!("{:02x}", value))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    };
                     return Err(AppError::SerialError(format!(
-                        "Cmd {:02x} timeout. Drained: {}",
-                        cmd, drained_hex
+                        "Cmd {:02x} timeout",
+                        cmd
                     )));
                 }
             }
@@ -294,6 +267,10 @@ impl Stm32Isp {
         let version = data.first().copied().unwrap_or_default();
         let commands = data.get(1..).unwrap_or(&[]).to_vec();
         Ok((version, commands))
+    }
+
+    pub fn supports_command(commands: &[u8], command: u8) -> bool {
+        commands.contains(&command)
     }
 
     pub fn get_bootloader_version(&mut self) -> AppResult<(u8, Vec<u8>)> {
@@ -326,13 +303,29 @@ impl Stm32Isp {
         Ok((device_id, pid))
     }
 
-    pub fn erase_flash(&mut self) -> AppResult<()> {
-        self.send_command(CMD_ERASE)?;
+    pub fn erase_flash(&mut self, commands: &[u8]) -> AppResult<()> {
+        let erase_cmd = if Self::supports_command(commands, CMD_EXTENDED_ERASE) {
+            CMD_EXTENDED_ERASE
+        } else if Self::supports_command(commands, CMD_ERASE) {
+            CMD_ERASE
+        } else {
+            return Err(AppError::FlashError(
+                "Bootloader does not advertise a supported erase command".into(),
+            ));
+        };
+
+        self.send_command(erase_cmd)?;
 
         self.set_timeout(15_000)?;
-        self.port.write_all(&[0xFF, 0x00])?;
-        self.port.flush()?;
-        let result = self.expect_ack("Erase");
+        let result = if erase_cmd == CMD_EXTENDED_ERASE {
+            self.port.write_all(&[0xFF, 0xFF, 0x00])?;
+            self.port.flush()?;
+            self.expect_ack("Extended Erase")
+        } else {
+            self.port.write_all(&[0xFF, 0x00])?;
+            self.port.flush()?;
+            self.expect_ack("Erase")
+        };
         self.set_timeout(DEFAULT_TIMEOUT_MS)?;
         result
     }
@@ -342,6 +335,19 @@ impl Stm32Isp {
             return Err(AppError::FlashError(
                 "Write block size must be between 1 and 256 bytes".into(),
             ));
+        }
+        if data.len() % 4 != 0 {
+            return Err(AppError::FlashError(format!(
+                "Write block at {:#010X} is not 4-byte aligned ({} bytes)",
+                address,
+                data.len()
+            )));
+        }
+        if address % 4 != 0 {
+            return Err(AppError::FlashError(format!(
+                "Write address {:#010X} is not 4-byte aligned",
+                address
+            )));
         }
 
         self.send_command(CMD_WRITE_MEMORY)?;
@@ -361,13 +367,33 @@ impl Stm32Isp {
     }
 
     pub fn write_memory(&mut self, mut address: u32, data: &[u8]) -> AppResult<()> {
+        self.write_memory_with_progress(address, data, |_address, _len| {})
+    }
+
+    pub fn write_memory_with_progress<F>(&mut self, mut address: u32, data: &[u8], mut on_chunk: F) -> AppResult<()>
+    where
+        F: FnMut(u32, usize),
+    {
         if data.is_empty() {
             return Ok(());
         }
 
         for chunk in data.chunks(256) {
-            self.write_block(address, chunk)?;
+            let chunk_start = address;
+            if chunk.len() % 4 == 0 {
+                self.write_block(address, chunk)?;
+                address += chunk.len() as u32;
+                on_chunk(chunk_start, chunk.len());
+                std::thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+
+            let padded_len = (chunk.len() + 3) & !3;
+            let mut padded = vec![0xFFu8; padded_len];
+            padded[..chunk.len()].copy_from_slice(chunk);
+            self.write_block(address, &padded)?;
             address += chunk.len() as u32;
+            on_chunk(chunk_start, chunk.len());
             std::thread::sleep(Duration::from_millis(2));
         }
 
@@ -375,11 +401,19 @@ impl Stm32Isp {
     }
 
     pub fn verify_memory(&mut self, mut address: u32, data: &[u8]) -> AppResult<()> {
+        self.verify_memory_with_progress(address, data, |_address, _len| {})
+    }
+
+    pub fn verify_memory_with_progress<F>(&mut self, mut address: u32, data: &[u8], mut on_chunk: F) -> AppResult<()>
+    where
+        F: FnMut(u32, usize),
+    {
         if data.is_empty() {
             return Ok(());
         }
 
         for chunk in data.chunks(256) {
+            let chunk_start = address;
             let read_data = self.read_memory(address, chunk.len())?;
 
             if read_data.len() != chunk.len() {
@@ -401,6 +435,7 @@ impl Stm32Isp {
             }
 
             address += chunk.len() as u32;
+            on_chunk(chunk_start, chunk.len());
         }
 
         Ok(())
@@ -409,6 +444,12 @@ impl Stm32Isp {
     pub fn read_memory(&mut self, address: u32, size: usize) -> AppResult<Vec<u8>> {
         if size == 0 || size > 256 {
             return Err(AppError::FlashError("Read size must be 1-256 bytes".into()));
+        }
+        if address % 4 != 0 {
+            return Err(AppError::FlashError(format!(
+                "Read address {:#010X} is not 4-byte aligned",
+                address
+            )));
         }
 
         self.send_command(CMD_READ_MEMORY)?;

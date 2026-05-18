@@ -5,7 +5,7 @@
   "chipVariant": "Chip Variant",
   "selectFile": "Select Firmware File",
   "dropFileHint": "Drop firmware file here, or click to select",
-  "supportedFormats": "Supports HEX, BIN, SREC formats",
+  "supportedFormats": "Supports HEX and BIN formats (.hex, .ihx, .bin)",
   "firmwareInfo": "Firmware Info",
   "startFlash": "Start Flash",
   "cancelFlash": "Cancel Flash",

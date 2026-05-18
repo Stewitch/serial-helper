@@ -5,7 +5,7 @@
   "chipVariant": "具体型号",
   "selectFile": "选择固件文件",
   "dropFileHint": "拖放固件文件到此处，或点击选择",
-  "supportedFormats": "支持 HEX、BIN、SREC、ELF、DFU 格式",
+  "supportedFormats": "支持 HEX 和 BIN 格式（.hex、.ihx、.bin）",
   "firmwareInfo": "固件信息",
   "startFlash": "开始烧录",
   "cancelFlash": "取消烧录",
@@ -26,7 +26,7 @@
     "resumingMonitor": "正在恢复监视器..."
   },
   "errors": {
-    "noResponse": "芯片无响应，请检查 BOOT0 是否置高",
+    "noResponse": "芯片无响应，请检查 BOOT0 是否拉高",
     "verifyFailed": "校验失败",
     "toolNotFound": "未找到 {{tool}}，请在模块管理中安装",
     "cancelled": "烧录已取消"
@@ -34,9 +34,9 @@
   "verify": "校验",
   "runAfter": "编程后执行",
   "dtrRts": "DTR/RTS",
-  "dtrRtsNone": "无 (手动)",
-  "dtrRtsStandard": "DTR→BOOT0, RTS→RESET",
-  "dtrRtsAlt": "RTS→BOOT0, DTR→RESET",
+  "dtrRtsNone": "无（手动）",
+  "dtrRtsStandard": "DTR→BOOT0，RTS→RESET",
+  "dtrRtsAlt": "RTS→BOOT0，DTR→RESET",
   "rtsFunction": "RTS",
   "dtrFunction": "DTR",
   "pinFunction": "功能",
@@ -50,9 +50,9 @@
   "erase": "擦除",
   "readFlash": "读 Flash",
   "log": {
-    "chipDetected": "检测到芯片: {{chip}}",
+    "chipDetected": "检测到芯片：{{chip}}",
     "eraseDone": "擦除完成",
-    "writeProgress": "写入中: {{addr}} ({{current}}/{{total}} KB)",
+    "writeProgress": "写入中：{{addr}} ({{current}}/{{total}} KB)",
     "verifyDone": "校验通过",
     "duration": "耗时 {{duration}} 秒"
   }

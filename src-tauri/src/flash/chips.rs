@@ -97,9 +97,28 @@ fn new(family: &str, name: &str, device_id: u16, flash_kb: u32, ram_kb: u32, pag
 }
 
 pub fn find_chip_by_device_id(device_id: u16) -> Option<Stm32ChipInfo> {
-    chip_database()
+    let matches: Vec<Stm32ChipInfo> = chip_database()
         .into_iter()
-        .find(|c| c.device_id == device_id)
+        .filter(|c| c.device_id == device_id)
+        .collect();
+
+    match matches.len() {
+        0 => None,
+        1 => matches.into_iter().next(),
+        _ => {
+            let first = &matches[0];
+            Some(Stm32ChipInfo {
+                family: first.family.clone(),
+                name: format!("{} variants ({:#06x})", first.family, device_id),
+                device_id,
+                // Be conservative when only the shared device ID is known.
+                flash_kb: matches.iter().map(|chip| chip.flash_kb).min().unwrap_or(first.flash_kb),
+                flash_start: first.flash_start,
+                ram_kb: matches.iter().map(|chip| chip.ram_kb).min().unwrap_or(first.ram_kb),
+                page_size: matches.iter().map(|chip| chip.page_size).max().unwrap_or(first.page_size),
+            })
+        }
+    }
 }
 
 pub fn find_chip_by_name(name: &str) -> Option<Stm32ChipInfo> {

@@ -74,6 +74,34 @@ fn emit_progress(app: &AppHandle, stage: &str, percent: u8, message: &str) {
     });
 }
 
+fn parse_supported_firmware_from_path(
+    firmware_path: &str,
+    data: &[u8],
+) -> Result<crate::firmware::FirmwareData, AppError> {
+    let path = Path::new(firmware_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("firmware");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "hex" | "ihx" => hex::parse_hex(filename, data),
+        "bin" => bin::parse_bin(filename, data, 0x0800_0000),
+        "" => Err(AppError::FirmwareParseError(
+            "Firmware file must have a supported extension (.hex, .ihx, .bin)".into(),
+        )),
+        _ => Err(AppError::FirmwareParseError(format!(
+            "Unsupported firmware format '.{}'. Only .hex/.ihx/.bin are currently flashable.",
+            ext
+        ))),
+    }
+}
+
 // ─── DTR/RTS Bootloader Entry ───
 fn dtr_rts_enter_bootloader(isp: &mut Stm32Isp, cfg: &DtrRtsConfig) -> Result<(), AppError> {
     use std::thread::sleep;
@@ -109,14 +137,18 @@ fn dtr_rts_enter_bootloader(isp: &mut Stm32Isp, cfg: &DtrRtsConfig) -> Result<()
     if boot0_pin != "" { let _ = set_pin(isp, boot0_pin, active_level(boot0_lvl, false)); }
     sleep(Duration::from_millis(10));
 
-    // 2. Assert RESET + BOOT0 simultaneously
-    if reset_pin != "" { set_pin(isp, reset_pin, active_level(reset_lvl, true))?; }
+    // 2. Assert BOOT0 first and let it settle, to mimic the user clicking
+    // "read chip" and pressing RESET a moment later.
     if boot0_pin != "" { set_pin(isp, boot0_pin, active_level(boot0_lvl, true))?; }
+    sleep(Duration::from_millis(80));
+
+    // 3. Pulse RESET while BOOT0 stays asserted.
+    if reset_pin != "" { set_pin(isp, reset_pin, active_level(reset_lvl, true))?; }
     sleep(Duration::from_millis(100));
 
-    // 3. Release RESET (BOOT0 stays asserted → chip boots into bootloader)
+    // 4. Release RESET (BOOT0 stays asserted → chip boots into bootloader)
     if reset_pin != "" { set_pin(isp, reset_pin, active_level(reset_lvl, false))?; }
-    sleep(Duration::from_millis(100));
+    sleep(Duration::from_millis(120));
 
     Ok(())
 }
@@ -161,6 +193,8 @@ fn connect_and_enter(
     dtr_rts: &DtrRtsConfig,
     app: &AppHandle,
 ) -> Result<Stm32Isp, AppError> {
+    use std::time::Duration;
+
     emit_progress(app, "connecting", 5, &format!("Opening {} @ {} baud...", port_name, baud_rate));
 
     let serial_port = serialport::new(port_name, baud_rate)
@@ -175,30 +209,113 @@ fn connect_and_enter(
     // Let the USB-to-serial adapter settle
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    if auto_reset {
-        emit_progress(app, "bootloader", 10, "DTR/RTS: entering bootloader...");
-        dtr_rts_enter_bootloader(&mut isp, dtr_rts)?;
-    }
-
-    emit_progress(app, "bootloader", 15, "Sync (0x7F)...");
     let app_clone = app.clone();
-    isp.enter_bootloader(&|bytes: &[u8]| {
+    let sync_logger = |bytes: &[u8]| {
         let s: String = bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
         let _ = app_clone.emit("flash-progress", FlashProgressEvent {
             stage: "sync".into(),
             percent: 0,
             message: format!("RX: {}", s),
         });
-    })?;
+    };
+
+    if auto_reset {
+        let attempts = 3;
+        let mut last_error: Option<AppError> = None;
+
+        for attempt in 1..=attempts {
+            emit_progress(
+                app,
+                "bootloader",
+                10,
+                &format!("DTR/RTS: entering bootloader (attempt {}/{})...", attempt, attempts),
+            );
+            dtr_rts_enter_bootloader(&mut isp, dtr_rts)?;
+
+            emit_progress(
+                app,
+                "bootloader",
+                15,
+                &format!("Sync (0x7F)... attempt {}/{}", attempt, attempts),
+            );
+
+            match isp.enter_bootloader_with_timeout(Duration::from_secs(2), &sync_logger) {
+                Ok(()) => {
+                    emit_progress(app, "bootloader", 20, "Sync OK");
+                    return Ok(isp);
+                }
+                Err(err) => {
+                    emit_progress(
+                        app,
+                        "bootloader",
+                        18,
+                        &format!("No bootloader response on attempt {}, retrying...", attempt),
+                    );
+                    last_error = Some(err);
+                }
+            }
+        }
+
+        return Err(last_error.unwrap_or_else(|| AppError::FlashError("Failed to enter bootloader".into())));
+    }
+
+    emit_progress(app, "bootloader", 15, "Sync (0x7F)...");
+    isp.enter_bootloader(&sync_logger)?;
     emit_progress(app, "bootloader", 20, "Sync OK");
     Ok(isp)
+}
+
+fn reenter_bootloader(
+    isp: &mut Stm32Isp,
+    auto_reset: bool,
+    dtr_rts: &DtrRtsConfig,
+    app: &AppHandle,
+) -> Result<(), AppError> {
+    use std::time::Duration;
+
+    let app_clone = app.clone();
+    let sync_logger = |bytes: &[u8]| {
+        let s: String = bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let _ = app_clone.emit("flash-progress", FlashProgressEvent {
+            stage: "sync".into(),
+            percent: 0,
+            message: format!("RX: {}", s),
+        });
+    };
+
+    if auto_reset {
+        let attempts = 3;
+        let mut last_error: Option<AppError> = None;
+
+        for attempt in 1..=attempts {
+            emit_progress(
+                app,
+                "bootloader",
+                45,
+                &format!("Re-entering bootloader (attempt {}/{})...", attempt, attempts),
+            );
+            dtr_rts_enter_bootloader(isp, dtr_rts)?;
+
+            match isp.enter_bootloader_with_timeout(Duration::from_secs(2), &sync_logger) {
+                Ok(()) => {
+                    emit_progress(app, "bootloader", 48, "Bootloader re-entry OK");
+                    return Ok(());
+                }
+                Err(err) => last_error = Some(err),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| AppError::FlashError("Failed to re-enter bootloader".into())))
+    } else {
+        isp.enter_bootloader(&sync_logger)
+    }
 }
 
 // ─── Helper: detect chip ───
 fn detect_chip(isp: &mut Stm32Isp, app: &AppHandle) -> Result<ChipInfoResult, AppError> {
     emit_progress(app, "detecting", 25, "Sending Get (0x00)...");
 
-    // Get (0x00) MUST be first command after sync — returns version + supported cmds
+    // Get (0x00) MUST be first command after sync – returns version + supported cmds
     let (version, _cmds) = isp.get_commands()?;
 
     emit_progress(app, "detecting", 28, &format!("Bootloader v{}.{}, reading chip ID...", version >> 4, version & 0xF));
@@ -220,6 +337,47 @@ fn detect_chip(isp: &mut Stm32Isp, app: &AppHandle) -> Result<ChipInfoResult, Ap
     })
 }
 
+fn validate_firmware_segments(
+    firmware: &crate::firmware::FirmwareData,
+    chip: &Stm32ChipInfo,
+) -> Result<(), AppError> {
+    let flash_end = chip.flash_start + chip.flash_kb * 1024;
+    let mut ranges: Vec<(u32, u32)> = firmware
+        .segments
+        .iter()
+        .map(|segment| (segment.address, segment.address + segment.data.len() as u32))
+        .collect();
+    ranges.sort_by_key(|(start, _)| *start);
+
+    for (index, seg) in firmware.segments.iter().enumerate() {
+        let seg_end = seg.address + seg.data.len() as u32;
+        if seg.address % 4 != 0 {
+            return Err(AppError::FlashError(format!(
+                "Firmware segment starts at non-4-byte-aligned address {:#010X}",
+                seg.address
+            )));
+        }
+        if seg.address < chip.flash_start || seg_end > flash_end {
+            return Err(AppError::FlashError(format!(
+                "Firmware segment {:#010X}-{:#010X} outside flash range ({:#010X}-{:#010X})",
+                seg.address, seg_end, chip.flash_start, flash_end
+            )));
+        }
+        if index > 0 {
+            let (prev_start, prev_end) = ranges[index - 1];
+            let (curr_start, curr_end) = ranges[index];
+            if curr_start < prev_end {
+                return Err(AppError::FlashError(format!(
+                    "Firmware segments overlap: {:#010X}-{:#010X} overlaps {:#010X}-{:#010X}",
+                    prev_start, prev_end, curr_start, curr_end
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ─── Helper: write firmware ───
 fn write_firmware(
     isp: &mut Stm32Isp,
@@ -232,13 +390,18 @@ fn write_firmware(
     emit_progress(app, "writing", 50, &format!("Writing {} bytes in {} segment(s)...", total, firmware.segments.len()));
 
     for (i, seg) in firmware.segments.iter().enumerate() {
-        isp.write_memory(seg.address, &seg.data)?;
-        written += seg.data.len();
-        let pct = 50 + ((written as f64 / total as f64) * 40.0) as u8;
-        emit_progress(app, "writing", pct.min(90), &format!(
-            "Segment {}/{}: {:#010X} ({}/{} bytes)",
-            i + 1, firmware.segments.len(), seg.address, written, total
-        ));
+        isp.write_memory_with_progress(seg.address, &seg.data, |chunk_addr, chunk_len| {
+            written += chunk_len;
+            let pct = 50 + ((written as f64 / total as f64) * 40.0) as u8;
+            emit_progress(app, "writing", pct.min(90), &format!(
+                "Segment {}/{}: {:#010X} ({}/{} bytes)",
+                i + 1,
+                firmware.segments.len(),
+                chunk_addr,
+                written,
+                total
+            ));
+        })?;
     }
 
     emit_progress(app, "writing", 90, "Write complete");
@@ -262,8 +425,17 @@ pub fn parse_firmware(file_path: String, base_address: Option<u32>) -> Result<Fi
     let firmware = match ext.as_str() {
         "hex" | "ihx" => hex::parse_hex(&filename, &data)?,
         "bin" => bin::parse_bin(&filename, &data, base_address.unwrap_or(0x0800_0000))?,
-        _ => hex::parse_hex(&filename, &data)
-            .or_else(|_| bin::parse_bin(&filename, &data, base_address.unwrap_or(0x0800_0000)))?,
+        "" => {
+            return Err(AppError::FirmwareParseError(
+                "Firmware file must have a supported extension (.hex, .ihx, .bin)".into(),
+            ));
+        }
+        _ => {
+            return Err(AppError::FirmwareParseError(format!(
+                "Unsupported firmware format '.{}'. Only .hex/.ihx/.bin are currently supported.",
+                ext
+            )));
+        }
     };
 
     let mut hasher = Sha256::new();
@@ -330,10 +502,34 @@ pub async fn erase_chip(
         &app,
     )?;
 
-    let _chip = detect_chip(&mut isp, &app)?;
+    emit_progress(&app, "detecting", 25, "Sending Get (0x00)...");
+    let (bootloader_version, bootloader_commands) = isp.get_commands()?;
+    emit_progress(
+        &app,
+        "detecting",
+        28,
+        &format!(
+            "Bootloader v{}.{}, reading chip ID...",
+            bootloader_version >> 4,
+            bootloader_version & 0xF
+        ),
+    );
+    let (device_id, pid) = isp.get_chip_id()?;
+    emit_progress(
+        &app,
+        "detecting",
+        30,
+        &format!(
+            "Device ID: {:#06x}, PID: {:?}, Bootloader: v{}.{}",
+            device_id,
+            pid,
+            bootloader_version >> 4,
+            bootloader_version & 0x0F
+        ),
+    );
 
     emit_progress(&app, "erasing", 35, "Erasing flash...");
-    isp.erase_flash()?;
+    isp.erase_flash(&bootloader_commands)?;
     emit_progress(&app, "erasing", 100, "Erase complete");
 
     Ok(())
@@ -350,6 +546,8 @@ pub async fn read_flash(
     size: u32,
     save_path: String,
 ) -> Result<(), AppError> {
+    const READ_PROGRESS_STEP: usize = 4096;
+
     let options = options.unwrap_or(ConnectOptions {
         auto_reset: false,
         dtr_rts: DtrRtsConfig::default(),
@@ -362,6 +560,22 @@ pub async fn read_flash(
         &app,
     )?;
 
+    if size == 0 {
+        return Err(AppError::FlashError("Read size must be greater than 0".into()));
+    }
+    if start_address % 4 != 0 {
+        return Err(AppError::FlashError(format!(
+            "Read start address {:#010X} must be 4-byte aligned",
+            start_address
+        )));
+    }
+    let end_address = start_address
+        .checked_add(size)
+        .ok_or_else(|| AppError::FlashError("Read range overflows 32-bit address space".into()))?;
+    if end_address < start_address {
+        return Err(AppError::FlashError("Read range is invalid".into()));
+    }
+
     emit_progress(&app, "reading", 0, &format!(
         "Reading {:#010X} - {:#010X} ({} bytes)...",
         start_address, start_address + size, size
@@ -371,18 +585,32 @@ pub async fn read_flash(
     let mut data = Vec::with_capacity(size as usize);
     let mut addr = start_address;
     let total = size as usize;
+    let read_start = Instant::now();
+    let mut last_reported = 0usize;
 
     while data.len() < total {
         let remaining = total - data.len();
-        let chunk_size = remaining.min(256) as u8;
+        let chunk_size = remaining.min(256);
 
-        let chunk = isp.read_memory(addr, chunk_size as usize)?;
+        let chunk = isp.read_memory(addr, chunk_size)?;
         data.extend_from_slice(&chunk);
 
-        let pct = (data.len() as f64 / total as f64 * 100.0) as u8;
-        emit_progress(&app, "reading", pct, &format!(
-            "Read {}/{} bytes from {:#010X}", data.len(), total, addr
-        ));
+        let current_len = data.len();
+        let should_report = current_len == total
+            || current_len.saturating_sub(last_reported) >= READ_PROGRESS_STEP;
+        if should_report {
+            let pct = (current_len as f64 / total as f64 * 100.0) as u8;
+            let elapsed = read_start.elapsed().as_secs_f64().max(0.001);
+            let kbps = current_len as f64 / 1024.0 / elapsed;
+            emit_progress(&app, "reading", pct, &format!(
+                "Read {}/{} bytes from {:#010X} ({:.1} KB/s)",
+                current_len,
+                total,
+                addr,
+                kbps
+            ));
+            last_reported = current_len;
+        }
 
         addr += chunk_size as u32;
     }
@@ -412,12 +640,7 @@ pub async fn start_flash(
     emit_progress(&app, "parsing", 0, "Parsing firmware...");
     let data = fs::read(&firmware_path)
         .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
-    let path = Path::new(&firmware_path);
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let firmware = match ext.as_str() {
-        "hex" | "ihx" => hex::parse_hex("firmware", &data)?,
-        _ => bin::parse_bin("firmware", &data, 0x0800_0000)?,
-    };
+    let firmware = parse_supported_firmware_from_path(&firmware_path, &data)?;
 
     if firmware.segments.is_empty() {
         return Err(AppError::FirmwareParseError("No data in firmware".into()));
@@ -432,7 +655,39 @@ pub async fn start_flash(
     let mut isp = connect_and_enter(&port_name, baud_rate, options.auto_reset, &options.dtr_rts, &app)?;
 
     // 3. Detect chip
-    let chip_info = detect_chip(&mut isp, &app)?;
+    emit_progress(&app, "detecting", 25, "Sending Get (0x00)...");
+    let (bootloader_version, bootloader_commands) = isp.get_commands()?;
+    emit_progress(
+        &app,
+        "detecting",
+        28,
+        &format!(
+            "Bootloader v{}.{}, reading chip ID...",
+            bootloader_version >> 4,
+            bootloader_version & 0xF
+        ),
+    );
+    let (device_id, pid) = isp.get_chip_id()?;
+    let chip_match = chips::find_chip_by_device_id(device_id);
+    let chip_info = ChipInfoResult {
+        device_id,
+        device_id_hex: format!("{:#06x}", device_id),
+        pid,
+        bootloader_version,
+        chip_match,
+    };
+    emit_progress(
+        &app,
+        "detecting",
+        30,
+        &format!(
+            "Device ID: {:#06x}, PID: {:?}, Bootloader: v{}.{}",
+            device_id,
+            pid,
+            bootloader_version >> 4,
+            bootloader_version & 0x0F
+        ),
+    );
 
     let chip = chip_info.chip_match.as_ref().ok_or_else(|| {
         AppError::UnsupportedChip(format!(
@@ -441,35 +696,17 @@ pub async fn start_flash(
         ))
     })?;
 
-    // Validate firmware fits
-    let flash_end = chip.flash_start + chip.flash_kb * 1024;
-    for seg in &firmware.segments {
-        let seg_end = seg.address + seg.data.len() as u32;
-        if seg.address < chip.flash_start || seg_end > flash_end {
-            return Err(AppError::FlashError(format!(
-                "Firmware segment {:#010X}-{:#010X} outside flash range ({:#010X}-{:#010X})",
-                seg.address, seg_end, chip.flash_start, flash_end
-            )));
-        }
-    }
+    validate_firmware_segments(&firmware, chip)?;
 
     // 4. Erase
     emit_progress(&app, "erasing", 35, &format!(
         "Erasing {} ({})...", chip.name, chip.flash_kb
     ));
-    isp.erase_flash()?;
+    isp.erase_flash(&bootloader_commands)?;
 
-    // Erase resets the chip on many STM32 models — re-enter bootloader
+    // Erase resets the chip on many STM32 models – re-enter bootloader
     emit_progress(&app, "bootloader", 45, "Re-entering bootloader after erase...");
-    if options.auto_reset {
-        dtr_rts_enter_bootloader(&mut isp, &options.dtr_rts)?;
-    }
-    isp.enter_bootloader(&|bytes: &[u8]| {
-        let s: String = bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-        let _ = app.emit("flash-progress", FlashProgressEvent {
-            stage: "sync".into(), percent: 0, message: format!("RX: {}", s),
-        });
-    })?;
+    reenter_bootloader(&mut isp, options.auto_reset, &options.dtr_rts, &app)?;
 
     // 5. Write
     write_firmware(&mut isp, &firmware, &app)?;
@@ -477,8 +714,19 @@ pub async fn start_flash(
     // 6. Verify (optional)
     if options.verify {
         emit_progress(&app, "verifying", 92, "Verifying...");
+        let total_verify = firmware.segments.iter().map(|s| s.data.len()).sum::<usize>();
+        let mut verified = 0usize;
         for seg in &firmware.segments {
-            isp.verify_memory(seg.address, &seg.data)?;
+            isp.verify_memory_with_progress(seg.address, &seg.data, |chunk_addr, chunk_len| {
+                verified += chunk_len;
+                let pct = 92 + ((verified as f64 / total_verify as f64) * 6.0) as u8;
+                emit_progress(&app, "verifying", pct.min(98), &format!(
+                    "Verifying {:#010X} ({}/{} bytes)",
+                    chunk_addr,
+                    verified,
+                    total_verify
+                ));
+            })?;
         }
         emit_progress(&app, "verifying", 98, "Verification passed");
     }
@@ -490,7 +738,7 @@ pub async fn start_flash(
         if options.auto_reset {
             dtr_rts_run_mode(&mut isp, &options.dtr_rts)?;
         } else {
-            let entry = firmware.segments.first().map(|s| s.address).unwrap_or(chip.flash_start);
+            let entry = chip.flash_start;
             isp.go(entry)?;
         }
     }
