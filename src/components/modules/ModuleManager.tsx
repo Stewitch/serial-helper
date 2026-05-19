@@ -1,30 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { Boxes, Wrench, CircleCheck, CircleAlert, Clock3, RefreshCw, Cpu, FileCode2, Info, Download } from "lucide-react";
 import clsx from "clsx";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useModulesStore, type ModuleInfo, type EnvStatus } from "@/stores/modulesStore";
 
-interface ModuleInfo {
-  id: string;
-  name: string;
-  description: string;
-  builtin: boolean;
-  installed: boolean;
-  chip_count: number;
-  format_count: number;
-  status: string;
-  required_tools: string[];
-}
-
-interface EnvStatus {
-  ready: boolean;
-  missing_tools: string[];
-  messages: string[];
-  version?: string | null;
-  install_hint?: string | null;
-  install_steps: string[];
-  references: { label: string; url: string }[];
+interface ModuleEnvUpdate {
+  module: ModuleInfo;
+  env: EnvStatus;
 }
 
 function statusTone(status: string, ready: boolean | undefined) {
@@ -48,9 +33,13 @@ function statusTone(status: string, ready: boolean | undefined) {
 
 export function ModuleManager() {
   const { t } = useTranslation(["settings", "common"]);
-  const [modules, setModules] = useState<ModuleInfo[]>([]);
-  const [envByModule, setEnvByModule] = useState<Record<string, EnvStatus>>({});
-  const [refreshing, setRefreshing] = useState(false);
+  const modules = useModulesStore((s) => s.modules);
+  const envByModule = useModulesStore((s) => s.envByModule);
+  const refreshing = useModulesStore((s) => s.refreshing);
+  const lastLoadedAt = useModulesStore((s) => s.lastLoadedAt);
+  const setModulesData = useModulesStore((s) => s.setModulesData);
+  const updateModuleEnv = useModulesStore((s) => s.updateModuleEnv);
+  const setRefreshing = useModulesStore((s) => s.setRefreshing);
   const [selectedModule, setSelectedModule] = useState<ModuleInfo | null>(null);
   const [installingModule, setInstallingModule] = useState<ModuleInfo | null>(null);
 
@@ -58,40 +47,34 @@ export function ModuleManager() {
     setRefreshing(true);
     try {
       const moduleList = await invoke<ModuleInfo[]>("list_modules");
-      setModules(moduleList);
-
-      const envEntries = await Promise.all(
-        moduleList.map(async (module) => {
-          try {
-            const env = await invoke<EnvStatus>("check_module_env", { moduleId: module.id });
-            return [module.id, env] as const;
-          } catch {
-            return [
-              module.id,
-              {
-                ready: false,
-                missing_tools: [],
-                messages: [t("moduleEnvCheckFailed", { ns: "settings", defaultValue: "Environment check failed." })],
-                version: null,
-                install_hint: null,
-                install_steps: [],
-                references: [],
-              },
-            ] as const;
-          }
-        })
-      );
-      setEnvByModule(Object.fromEntries(envEntries));
+      setModulesData(moduleList, {});
+      await invoke("start_module_scan");
     } catch {
-      setModules([]);
-    } finally {
+      setModulesData([], {});
       setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    void refreshModules();
-  }, []);
+    let unlisten: UnlistenFn | null = null;
+
+    void (async () => {
+      unlisten = await listen<ModuleEnvUpdate>("module-env-update", (event) => {
+        updateModuleEnv(event.payload.module, event.payload.env);
+        setRefreshing(false);
+      });
+    })();
+
+    if (!lastLoadedAt) {
+      void refreshModules();
+    }
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [lastLoadedAt, updateModuleEnv, setRefreshing]);
 
   const selectedEnv = useMemo(
     () => (selectedModule ? envByModule[selectedModule.id] : undefined),
@@ -218,9 +201,7 @@ export function ModuleManager() {
 
                   <div className="rounded-lg border border-border bg-surface-alt/30 p-3 space-y-1.5">
                     <p className="text-text-secondary font-medium">{t("moduleStatus", { ns: "settings" })}</p>
-                    <p className="text-text-muted">
-                      {statusLabel(selectedModule, selectedEnv)}
-                    </p>
+                    <p className="text-text-muted">{statusLabel(selectedModule, selectedEnv)}</p>
                     <p className="text-text-muted">
                       {selectedEnv?.version
                         ? `${t("version", { ns: "settings" })}: ${selectedEnv.version}`
@@ -289,12 +270,7 @@ export function ModuleManager() {
                 </div>
 
                 <div className="p-4 space-y-3 text-[0.6875rem]">
-                  <p className="text-text-secondary font-medium">
-                    {t("moduleInstallPending", {
-                      ns: "settings",
-                      defaultValue: "This module is not fully integrated yet. Use the guidance below to prepare the environment first.",
-                    })}
-                  </p>
+                  <p className="text-text-secondary font-medium">{t("moduleInstallPending", { ns: "settings" })}</p>
 
                   <div className="rounded-lg border border-border bg-surface-alt/30 p-3 space-y-1.5">
                     <p className="text-text-secondary font-medium">{t("install", { ns: "settings" })}</p>

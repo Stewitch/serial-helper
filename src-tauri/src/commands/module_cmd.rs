@@ -1,9 +1,10 @@
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use crate::flash::orchestrator::{EnvStatus, HelpLink};
 use crate::tools::checker::ToolChecker;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModuleInfo {
     pub id: String,
     pub name: String,
@@ -16,11 +17,16 @@ pub struct ModuleInfo {
     pub required_tools: Vec<String>,
 }
 
-#[tauri::command]
-pub fn list_modules() -> Result<Vec<ModuleInfo>, String> {
+#[derive(Debug, Clone, Serialize)]
+pub struct ModuleEnvUpdate {
+    pub module: ModuleInfo,
+    pub env: EnvStatus,
+}
+
+fn module_catalog() -> Vec<ModuleInfo> {
     let avrdude_ready = ToolChecker::is_installed("avrdude");
 
-    Ok(vec![
+    vec![
         ModuleInfo {
             id: "stm32-isp".into(),
             name: "STM32 Serial ISP".into(),
@@ -54,7 +60,12 @@ pub fn list_modules() -> Result<Vec<ModuleInfo>, String> {
             status: "planned".into(),
             required_tools: vec!["python".into(), "esptool".into()],
         },
-    ])
+    ]
+}
+
+#[tauri::command]
+pub fn list_modules() -> Result<Vec<ModuleInfo>, String> {
+    Ok(module_catalog())
 }
 
 #[tauri::command]
@@ -155,4 +166,24 @@ pub fn check_module_env(module_id: String) -> Result<EnvStatus, String> {
         }
         _ => Err(format!("Unknown module '{}'", module_id)),
     }
+}
+
+#[tauri::command]
+pub fn start_module_scan(app: AppHandle) -> Result<(), String> {
+    let modules = module_catalog();
+    std::thread::spawn(move || {
+        for module in modules {
+            if let Ok(env) = check_module_env(module.id.clone()) {
+                let _ = app.emit(
+                    "module-env-update",
+                    ModuleEnvUpdate {
+                        module,
+                        env,
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(())
 }

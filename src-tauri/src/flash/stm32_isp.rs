@@ -20,6 +20,8 @@ const CMD_GO: u8 = 0x21;
 const CMD_WRITE_MEMORY: u8 = 0x31;
 const CMD_ERASE: u8 = 0x43;
 const CMD_EXTENDED_ERASE: u8 = 0x44;
+const CMD_WRITE_UNPROTECT: u8 = 0x73;
+const CMD_READOUT_UNPROTECT: u8 = 0x92;
 
 const ACK: u8 = 0x79;
 const NACK: u8 = 0x1F;
@@ -147,6 +149,12 @@ impl Stm32Isp {
         self.port.write_all(&[checksum])?;
         self.port.flush()?;
         self.expect_ack(context)
+    }
+
+    fn clear_pending_response(&mut self) -> AppResult<()> {
+        self.pending_rx.clear();
+        let _ = self.wait_for_quiet(2, 20)?;
+        Ok(())
     }
 
     /// Enter bootloader and wait up to `timeout` for a sync response.
@@ -304,17 +312,7 @@ impl Stm32Isp {
         Ok((device_id, pid))
     }
 
-    pub fn erase_flash(&mut self, commands: &[u8]) -> AppResult<()> {
-        let erase_cmd = if Self::supports_command(commands, CMD_EXTENDED_ERASE) {
-            CMD_EXTENDED_ERASE
-        } else if Self::supports_command(commands, CMD_ERASE) {
-            CMD_ERASE
-        } else {
-            return Err(AppError::FlashError(
-                "Bootloader does not advertise a supported erase command".into(),
-            ));
-        };
-
+    fn erase_with_command(&mut self, erase_cmd: u8) -> AppResult<()> {
         self.send_command(erase_cmd)?;
 
         self.set_timeout(ERASE_TIMEOUT_MS)?;
@@ -329,6 +327,64 @@ impl Stm32Isp {
         };
         self.set_timeout(DEFAULT_TIMEOUT_MS)?;
         result
+    }
+
+    pub fn write_unprotect(&mut self) -> AppResult<()> {
+        self.send_command(CMD_WRITE_UNPROTECT)?;
+        self.set_timeout(10_000)?;
+        let result = self.expect_ack("Write Unprotect");
+        self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+        result
+    }
+
+    pub fn readout_unprotect(&mut self) -> AppResult<()> {
+        self.send_command(CMD_READOUT_UNPROTECT)?;
+        self.set_timeout(ERASE_TIMEOUT_MS)?;
+        let result = self.expect_ack("Readout Unprotect");
+        self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+        result
+    }
+
+    pub fn erase_flash(&mut self, commands: &[u8]) -> AppResult<()> {
+        let mut candidates = Vec::new();
+        if Self::supports_command(commands, CMD_EXTENDED_ERASE) {
+            candidates.push(CMD_EXTENDED_ERASE);
+        }
+        if Self::supports_command(commands, CMD_ERASE) {
+            candidates.push(CMD_ERASE);
+        }
+        if !candidates.contains(&CMD_ERASE) {
+            candidates.push(CMD_ERASE);
+        }
+        if !candidates.contains(&CMD_EXTENDED_ERASE) {
+            candidates.push(CMD_EXTENDED_ERASE);
+        }
+        if candidates.is_empty() {
+            return Err(AppError::FlashError(
+                "Bootloader does not advertise a supported erase command".into(),
+            ));
+        }
+
+        let mut last_error: Option<AppError> = None;
+        for (index, erase_cmd) in candidates.iter().enumerate() {
+            match self.erase_with_command(*erase_cmd) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if index + 1 < candidates.len() {
+                        let _ = self.clear_pending_response();
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            AppError::FlashError(
+                "Erase command was denied. The device may be readout-protected or flash write-protected."
+                    .into(),
+            )
+        }))
     }
 
     fn write_block(&mut self, address: u32, data: &[u8]) -> AppResult<()> {

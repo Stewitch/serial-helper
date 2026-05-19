@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sync:version": "node ./scripts/sync-version.mjs",
+    "build:release": "powershell -ExecutionPolicy Bypass -File ./scripts/build-release.ps1"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.0",

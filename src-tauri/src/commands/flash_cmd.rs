@@ -326,6 +326,71 @@ fn reenter_bootloader(
     }
 }
 
+fn try_unprotect_and_reenter(
+    isp: &mut Stm32Isp,
+    auto_reset: bool,
+    dtr_rts: &DtrRtsConfig,
+    app: &AppHandle,
+) -> Result<(), AppError> {
+    emit_progress(app, "bootloader", 38, "Erase denied. Trying Write Unprotect...");
+    match isp.write_unprotect() {
+        Ok(()) => reenter_bootloader(isp, auto_reset, dtr_rts, app),
+        Err(write_err) => {
+            emit_progress(
+                app,
+                "bootloader",
+                38,
+                "Write Unprotect was denied. Trying Readout Unprotect (this resets and mass-erases the chip)...",
+            );
+            isp.readout_unprotect().map_err(|readout_err| {
+                AppError::FlashError(format!(
+                    "Write Unprotect failed: {}. Readout Unprotect failed: {}",
+                    write_err, readout_err
+                ))
+            })?;
+            reenter_bootloader(isp, auto_reset, dtr_rts, app)
+        }
+    }
+}
+
+fn erase_with_recovery(
+    isp: &mut Stm32Isp,
+    bootloader_commands: &[u8],
+    auto_reset: bool,
+    dtr_rts: &DtrRtsConfig,
+    app: &AppHandle,
+    version_status_bytes: &[u8],
+) -> Result<(), AppError> {
+    if let Err(err) = isp.erase_flash(bootloader_commands) {
+        let err_text = err.to_string();
+        if err_text.contains("denied")
+            || err_text.contains("Cmd 43 bad response [1f]")
+            || err_text.contains("Cmd 44 bad response [1f]")
+        {
+            try_unprotect_and_reenter(isp, auto_reset, dtr_rts, app)?;
+            emit_progress(app, "erasing", 39, "Retrying erase after unprotect...");
+            isp.erase_flash(bootloader_commands)?;
+            return Ok(());
+        }
+
+        return Err(AppError::FlashError(format!(
+            "{} Bootloader status bytes: {}",
+            err,
+            if version_status_bytes.is_empty() {
+                "none".into()
+            } else {
+                version_status_bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        )));
+    }
+
+    Ok(())
+}
+
 // ─── Helper: detect chip ───
 fn detect_chip(isp: &mut Stm32Isp, app: &AppHandle) -> Result<ChipInfoResult, AppError> {
     emit_progress(app, "detecting", 25, "Sending Get (0x00)...");
@@ -551,6 +616,7 @@ pub async fn erase_chip(
 
     emit_progress(&app, "detecting", 25, "Sending Get (0x00)...");
     let (bootloader_version, bootloader_commands) = isp.get_commands()?;
+    let (_version_status, version_status_bytes) = isp.get_bootloader_version().unwrap_or((bootloader_version, vec![]));
     emit_progress(
         &app,
         "detecting",
@@ -567,16 +633,35 @@ pub async fn erase_chip(
         "detecting",
         30,
         &format!(
-            "Device ID: {:#06x}, PID: {:?}, Bootloader: v{}.{}",
+            "Device ID: {:#06x}, PID: {:?}, Bootloader: v{}.{}{}",
             device_id,
             pid,
             bootloader_version >> 4,
-            bootloader_version & 0x0F
+            bootloader_version & 0x0F,
+            if version_status_bytes.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", Status: {}",
+                    version_status_bytes
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
         ),
     );
 
     emit_progress(&app, "erasing", 35, "Erasing flash...");
-    isp.erase_flash(&bootloader_commands)?;
+    erase_with_recovery(
+        &mut isp,
+        &bootloader_commands,
+        options.auto_reset,
+        &options.dtr_rts,
+        &app,
+        &version_status_bytes,
+    )?;
     emit_progress(&app, "erasing", 100, "Erase complete");
 
     Ok(())
@@ -783,7 +868,14 @@ pub async fn start_flash(
         "Erasing {} ({})...", chip.name, chip.flash_kb
     ));
     emit_progress(&app, "erasing", 36, "Mass erase can take tens of seconds on STM32F4; waiting for bootloader ACK...");
-    isp.erase_flash(&bootloader_commands)?;
+    erase_with_recovery(
+        &mut isp,
+        &bootloader_commands,
+        options.auto_reset,
+        &options.dtr_rts,
+        &app,
+        &[],
+    )?;
 
     // Erase resets the chip on many STM32 models – re-enter bootloader
     emit_progress(&app, "bootloader", 45, "Re-entering bootloader after erase...");

@@ -6,6 +6,8 @@ import { Toggle } from "@/components/shared/Toggle";
 import { ThemeSelect } from "@/components/shared/ThemeSelect";
 import type { SelectOption } from "@/components/shared/ThemeSelect";
 
+const appVersion = __APP_VERSION__;
+
 export function SettingsPage() {
   const { t, i18n } = useTranslation("settings");
   const commonT = useTranslation("common").t;
@@ -282,7 +284,7 @@ export function SettingsPage() {
       <div className={sectionClass}>
         <h3 className={sectionTitleClass}>{t("about")}</h3>
         <p className="text-[0.6875rem] text-text-secondary font-mono">
-          SerialHelper v0.1.0
+          SerialHelper v{appVersion}
         </p>
         <p className="text-[0.625rem] text-text-muted mt-1">
           Tauri 2.x + React 18 + Rust

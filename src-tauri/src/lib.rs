@@ -35,6 +35,7 @@ pub fn run() {
             commands::flash_cmd::cancel_flash,
             commands::module_cmd::list_modules,
             commands::module_cmd::check_module_env,
+            commands::module_cmd::start_module_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running SerialHelper");
