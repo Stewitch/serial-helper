@@ -1,9 +1,11 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useSerialStore } from "@/stores/serialStore";
 import { useAppStore } from "@/stores/appStore";
+import { useFlashStore, type FirmwareInfo } from "@/stores/flashStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { PortSelector } from "@/components/shared/PortSelector";
 import { BaudRateInput } from "@/components/shared/BaudRateInput";
@@ -12,14 +14,6 @@ import { Toggle } from "@/components/shared/Toggle";
 import { Zap, Upload, XCircle, CheckCircle, Loader2, Cpu, Trash2, FileDown } from "lucide-react";
 import clsx from "clsx";
 import type { SerialConfig } from "@/types/serial";
-
-interface FirmwareInfo {
-  filename: string;
-  format: string;
-  size: number;
-  segments: { address: number; size: number; range: string }[];
-  checksum: string;
-}
 
 interface FlashProgress {
   stage: string;
@@ -106,24 +100,12 @@ function parseHexInput(value: string): number | null {
 export function FlashPanel() {
   const { t } = useTranslation("flash");
 
-  const [firmware, setFirmware] = useState<FirmwareInfo | null>(null);
-  const [firmwarePath, setFirmwarePath] = useState("");
   const [chipInfo, setChipInfo] = useState<ChipInfoResult | null>(null);
   const [flashing, setFlashing] = useState(false);
   const [progress, setProgress] = useState<FlashProgress | null>(null);
-  const [flashLog, setFlashLog] = useState<string[]>([]);
+  const [flashLog, setFlashLog] = useState<Array<{ id: number; text: string; replaceKey?: string }>>([]);
   const [flashResult, setFlashResult] = useState<"success" | "error" | null>(null);
   const [dragOver, setDragOver] = useState(false);
-
-  const [optVerify, setOptVerify] = useState(true);
-  const [optRunAfter, setOptRunAfter] = useState(true);
-  const [dtrRtsEnabled, setDtrRtsEnabled] = useState(true);
-  const [rtsFunc, setRtsFunc] = useState("reset");
-  const [rtsLevel, setRtsLevel] = useState("low");
-  const [dtrFunc, setDtrFunc] = useState("bootloader");
-  const [dtrLevel, setDtrLevel] = useState("high");
-  const [flashReadAddress, setFlashReadAddress] = useState("0x08000000");
-  const [flashReadSize, setFlashReadSize] = useState("0x20000");
 
   const portName = useSerialStore((s) => s.config.port_name);
   const baudRate = useSerialStore((s) => s.config.baud_rate);
@@ -133,15 +115,59 @@ export function FlashPanel() {
   const isConnected = useSerialStore((s) => s.isConnected);
   const appState = useAppStore((s) => s.appState);
   const setState = useAppStore((s) => s.setState);
+  const setActivePage = useAppStore((s) => s.setActivePage);
+  const firmware = useFlashStore((s) => s.firmware);
+  const firmwarePath = useFlashStore((s) => s.firmwarePath);
+  const setFirmwareSelection = useFlashStore((s) => s.setFirmwareSelection);
+  const optVerify = useFlashStore((s) => s.verify);
+  const setOptVerify = useFlashStore((s) => s.setVerify);
+  const optRunAfter = useFlashStore((s) => s.runAfter);
+  const setOptRunAfter = useFlashStore((s) => s.setRunAfter);
+  const dtrRtsEnabled = useFlashStore((s) => s.dtrRtsEnabled);
+  const setDtrRtsEnabled = useFlashStore((s) => s.setDtrRtsEnabled);
+  const rtsFunc = useFlashStore((s) => s.rtsFunc);
+  const setRtsFunc = useFlashStore((s) => s.setRtsFunc);
+  const rtsLevel = useFlashStore((s) => s.rtsLevel);
+  const setRtsLevel = useFlashStore((s) => s.setRtsLevel);
+  const dtrFunc = useFlashStore((s) => s.dtrFunc);
+  const setDtrFunc = useFlashStore((s) => s.setDtrFunc);
+  const dtrLevel = useFlashStore((s) => s.dtrLevel);
+  const setDtrLevel = useFlashStore((s) => s.setDtrLevel);
+  const flashReadAddress = useFlashStore((s) => s.flashReadAddress);
+  const setFlashReadAddress = useFlashStore((s) => s.setFlashReadAddress);
+  const flashReadSize = useFlashStore((s) => s.flashReadSize);
+  const setFlashReadSize = useFlashStore((s) => s.setFlashReadSize);
   const autoResumeMonitor = useSettingsStore((s) => s.autoResumeMonitor);
+  const autoNavigateMonitorAfterFlash = useSettingsStore((s) => s.autoNavigateMonitorAfterFlash);
   const setAutoResumeMonitor = useSettingsStore((s) => s.setAutoResumeMonitor);
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const logIdRef = useRef(0);
+  const lastFirmwareSignatureRef = useRef<string | null>(null);
 
-  const addLog = useCallback((msg: string) => {
-    setFlashLog((prev) => [...prev, msg]);
+  const addLog = useCallback((msg: string, replaceKey?: string) => {
+    setFlashLog((prev) => {
+      if (replaceKey) {
+        let index = -1;
+        for (let i = prev.length - 1; i >= 0; i -= 1) {
+          if (prev[i].replaceKey === replaceKey) {
+            index = i;
+            break;
+          }
+        }
+        if (index >= 0) {
+          const next = [...prev];
+          next[index] = { ...next[index], text: msg };
+          return next;
+        }
+      }
+      return [...prev, { id: logIdRef.current++, text: msg, replaceKey }];
+    });
   }, []);
-  const clearLog = useCallback(() => setFlashLog([]), []);
+  const clearLog = useCallback(() => {
+    setFlashLog([]);
+    logIdRef.current = 0;
+  }, []);
 
   const connectOptions: ConnectOptions = {
     autoReset: dtrRtsEnabled,
@@ -183,24 +209,68 @@ export function FlashPanel() {
       await invoke("open_port", { config: resumeConfig });
       setConnected(resumeConfig.port_name);
       addLog(`[OK] Monitor resumed on ${resumeConfig.port_name}`);
+      if (autoNavigateMonitorAfterFlash) {
+        setActivePage("monitor");
+      }
       setState("MONITORING");
     } catch (e) {
       addLog(`[WARN] Failed to resume monitor: ${extractError(e)}`);
       setState("IDLE");
     }
-  }, [autoResumeMonitor, optRunAfter, addLog, setConnected, setState, t]);
+  }, [autoResumeMonitor, autoNavigateMonitorAfterFlash, optRunAfter, addLog, setConnected, setActivePage, setState, t]);
 
   const handleFile = useCallback(async (filePath: string) => {
     try {
-      const info = await invoke<FirmwareInfo>("parse_firmware", { filePath, baseAddress: null });
-      setFirmware(info);
-      setFirmwarePath(filePath);
+      const info = await invoke<FirmwareInfo>("parse_firmware_cached", { filePath, baseAddress: null });
+      setFirmwareSelection(filePath, info);
       setFlashResult(null);
+      lastFirmwareSignatureRef.current = `${info.checksum}:${info.size}`;
       addLog(`[OK] ${info.filename} - ${info.format}, ${formatSize(info.size)}, ${info.segments.length} segment(s)`);
     } catch (e) {
       addLog(`[ERROR] ${extractError(e)}`);
     }
-  }, [addLog]);
+  }, [addLog, setFirmwareSelection]);
+
+  useEffect(() => {
+    if (!firmwarePath || flashing) return;
+
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const info = await invoke<FirmwareInfo>("parse_firmware_cached", { filePath: firmwarePath, baseAddress: null });
+        if (cancelled) return;
+
+        const signature = `${info.checksum}:${info.size}`;
+        if (lastFirmwareSignatureRef.current !== signature) {
+          lastFirmwareSignatureRef.current = signature;
+          setFirmwareSelection(firmwarePath, info);
+          setFlashResult(null);
+          addLog(
+            `[INFO] Firmware refreshed: ${info.filename} - ${info.format}, ${formatSize(info.size)}, ${info.segments.length} segment(s)`,
+            "firmware-refresh"
+          );
+        }
+      } catch {
+        // Ignore transient read/parse failures while the file is being rebuilt.
+      }
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [firmwarePath, flashing, addLog, setFirmwareSelection]);
+
+  const progressLogKey = useCallback((stage: string, message: string): string | undefined => {
+    if (stage === "reading") return "progress-reading";
+    if (stage === "writing") return "progress-writing";
+    if (stage === "verifying") return "progress-verifying";
+    if (stage === "sync") return "progress-sync";
+    if (stage === "bootloader" && (message.includes("attempt") || message.includes("retrying") || message.includes("Sync"))) {
+      return "progress-bootloader";
+    }
+    return undefined;
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -213,18 +283,17 @@ export function FlashPanel() {
   }, [handleFile]);
 
   const handleFilePicker = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".hex,.ihx,.bin";
-    input.onchange = (e: Event) => {
-      const target = e.target as HTMLInputElement;
-      const file = target.files?.[0];
-      if (file) {
-        const path = (file as { path?: string }).path ?? file.name;
-        if (path) handleFile(path);
+    void (async () => {
+      const selected = await open({
+        multiple: false,
+        filters: [
+          { name: "Firmware", extensions: ["hex", "ihx", "bin"] },
+        ],
+      });
+      if (typeof selected === "string" && selected) {
+        await handleFile(selected);
       }
-    };
-    input.click();
+    })();
   }, [handleFile]);
 
   const handleReadChip = useCallback(async () => {
@@ -236,7 +305,12 @@ export function FlashPanel() {
 
     const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
       setProgress(event.payload);
-      if (event.payload.message) addLog(`[${event.payload.stage}] ${event.payload.message}`);
+      if (event.payload.message) {
+        addLog(
+          `[${event.payload.stage}] ${event.payload.message}`,
+          progressLogKey(event.payload.stage, event.payload.message)
+        );
+      }
     });
 
     try {
@@ -276,7 +350,12 @@ export function FlashPanel() {
 
     const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
       setProgress(event.payload);
-      if (event.payload.message) addLog(`[${event.payload.stage}] ${event.payload.message}`);
+      if (event.payload.message) {
+        addLog(
+          `[${event.payload.stage}] ${event.payload.message}`,
+          progressLogKey(event.payload.stage, event.payload.message)
+        );
+      }
     });
 
     try {
@@ -328,7 +407,12 @@ export function FlashPanel() {
 
     const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
       setProgress(event.payload);
-      if (event.payload.message) addLog(`[${event.payload.stage}] ${event.payload.message}`);
+      if (event.payload.message) {
+        addLog(
+          `[${event.payload.stage}] ${event.payload.message}`,
+          progressLogKey(event.payload.stage, event.payload.message)
+        );
+      }
     });
 
     try {
@@ -363,7 +447,12 @@ export function FlashPanel() {
 
     const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
       setProgress(event.payload);
-      addLog(`[${event.payload.stage}] ${event.payload.message}`);
+      if (event.payload.message) {
+        addLog(
+          `[${event.payload.stage}] ${event.payload.message}`,
+          progressLogKey(event.payload.stage, event.payload.message)
+        );
+      }
     });
     unlistenRef.current = unlisten;
 
@@ -645,18 +734,18 @@ export function FlashPanel() {
 
           {flashLog.length > 0 && (
             <div className="rounded-lg border border-border bg-surface-alt/30 p-3 font-mono text-[0.625rem] max-h-48 overflow-auto space-y-0.5 select-text">
-              {flashLog.map((line, index) => (
+              {flashLog.map((line) => (
                 <p
-                  key={index}
+                  key={line.id}
                   className={
-                    line.startsWith("[ERROR]")
+                    line.text.startsWith("[ERROR]")
                       ? "text-flash-error"
-                      : line.startsWith("[WARN]")
+                      : line.text.startsWith("[WARN]")
                         ? "text-yellow-500"
                         : "text-text-secondary"
                   }
                 >
-                  {line}
+                  {line.text}
                 </p>
               ))}
             </div>

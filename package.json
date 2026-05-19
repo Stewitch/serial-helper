@@ -17,6 +17,7 @@
     "@radix-ui/react-tooltip": "^1.1.0",
     "@tanstack/react-virtual": "^3.10.0",
     "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-dialog": "^2.3.0",
     "@tauri-apps/plugin-process": "^2.3.0",
     "clsx": "^2.1.0",
     "i18next": "^24.0.0",

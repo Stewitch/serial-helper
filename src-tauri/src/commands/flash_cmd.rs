@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use tauri::AppHandle;
 use tauri::Emitter;
+use tauri::State;
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
 
@@ -11,6 +12,7 @@ use crate::error::AppError;
 use crate::firmware::{FirmwareInfo, SegmentInfo, bin, hex};
 use crate::flash::chips::{self, Stm32ChipInfo};
 use crate::flash::stm32_isp::Stm32Isp;
+use crate::state::{AppState, FirmwareCacheEntry};
 
 #[derive(Clone, Serialize)]
 struct FlashProgressEvent {
@@ -100,6 +102,19 @@ fn parse_supported_firmware_from_path(
             ext
         ))),
     }
+}
+
+fn file_signature(path: &str) -> Result<(u64, u128), AppError> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
+    let modified = metadata
+        .modified()
+        .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file metadata: {}", e)))?;
+    let modified_ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| AppError::FirmwareParseError(format!("Invalid file modified time: {}", e)))?
+        .as_millis();
+    Ok((metadata.len(), modified_ms))
 }
 
 // ─── DTR/RTS Bootloader Entry ───
@@ -415,6 +430,14 @@ fn write_firmware(
 /// Parse a firmware file and return info
 #[tauri::command]
 pub fn parse_firmware(file_path: String, base_address: Option<u32>) -> Result<FirmwareInfo, AppError> {
+    parse_firmware_with_cache_inner(file_path, base_address, None)
+}
+
+fn parse_firmware_with_cache_inner(
+    file_path: String,
+    base_address: Option<u32>,
+    state: Option<&State<AppState>>,
+) -> Result<FirmwareInfo, AppError> {
     let path = Path::new(&file_path);
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
     let data = fs::read(&file_path)
@@ -438,6 +461,21 @@ pub fn parse_firmware(file_path: String, base_address: Option<u32>) -> Result<Fi
         }
     };
 
+    if let Some(state) = state {
+        let (size, modified_ms) = file_signature(&file_path)?;
+        state
+            .parsed_firmware_cache
+            .write()
+            .insert(
+                file_path.clone(),
+                FirmwareCacheEntry {
+                    size,
+                    modified_ms,
+                    firmware: firmware.clone(),
+                },
+            );
+    }
+
     let mut hasher = Sha256::new();
     for seg in &firmware.segments { hasher.update(&seg.data); }
 
@@ -458,6 +496,15 @@ pub fn parse_firmware(file_path: String, base_address: Option<u32>) -> Result<Fi
         }).collect(),
         checksum: format!("{:x}", hasher.finalize()),
     })
+}
+
+#[tauri::command]
+pub fn parse_firmware_cached(
+    state: State<AppState>,
+    file_path: String,
+    base_address: Option<u32>,
+) -> Result<FirmwareInfo, AppError> {
+    parse_firmware_with_cache_inner(file_path, base_address, Some(&state))
 }
 
 /// Connect, detect chip, and return chip info — read-only, no erase/write
@@ -629,6 +676,7 @@ pub async fn read_flash(
 #[tauri::command]
 pub async fn start_flash(
     app: AppHandle,
+    state: State<'_, AppState>,
     firmware_path: String,
     port_name: String,
     baud_rate: u32,
@@ -638,9 +686,41 @@ pub async fn start_flash(
 
     // 1. Parse firmware
     emit_progress(&app, "parsing", 0, "Parsing firmware...");
-    let data = fs::read(&firmware_path)
-        .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
-    let firmware = parse_supported_firmware_from_path(&firmware_path, &data)?;
+    let (size, modified_ms) = file_signature(&firmware_path)?;
+    let firmware = if let Some(cached) = state.parsed_firmware_cache.read().get(&firmware_path).cloned() {
+        if cached.size == size && cached.modified_ms == modified_ms {
+            cached.firmware
+        } else {
+            let data = fs::read(&firmware_path)
+                .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
+            let parsed = parse_supported_firmware_from_path(&firmware_path, &data)?;
+            state.parsed_firmware_cache.write().insert(
+                firmware_path.clone(),
+                FirmwareCacheEntry {
+                    size,
+                    modified_ms,
+                    firmware: parsed.clone(),
+                },
+            );
+            parsed
+        }
+    } else {
+        let data = fs::read(&firmware_path)
+            .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
+        let parsed = parse_supported_firmware_from_path(&firmware_path, &data)?;
+        state
+            .parsed_firmware_cache
+            .write()
+            .insert(
+                firmware_path.clone(),
+                FirmwareCacheEntry {
+                    size,
+                    modified_ms,
+                    firmware: parsed.clone(),
+                },
+            );
+        parsed
+    };
 
     if firmware.segments.is_empty() {
         return Err(AppError::FirmwareParseError("No data in firmware".into()));
@@ -702,6 +782,7 @@ pub async fn start_flash(
     emit_progress(&app, "erasing", 35, &format!(
         "Erasing {} ({})...", chip.name, chip.flash_kb
     ));
+    emit_progress(&app, "erasing", 36, "Mass erase can take tens of seconds on STM32F4; waiting for bootloader ACK...");
     isp.erase_flash(&bootloader_commands)?;
 
     // Erase resets the chip on many STM32 models – re-enter bootloader

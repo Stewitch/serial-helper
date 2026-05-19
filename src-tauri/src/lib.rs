@@ -12,6 +12,7 @@ pub fn run() {
     env_logger::init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
@@ -26,6 +27,7 @@ pub fn run() {
             commands::serial_cmd::serial_set_dtr,
             commands::serial_cmd::serial_set_rts,
             commands::flash_cmd::parse_firmware,
+            commands::flash_cmd::parse_firmware_cached,
             commands::flash_cmd::read_chip_info,
             commands::flash_cmd::erase_chip,
             commands::flash_cmd::read_flash,

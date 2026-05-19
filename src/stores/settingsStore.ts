@@ -15,6 +15,7 @@ interface SettingsStore {
   encoding: string;
   autoReconnect: boolean;
   autoResumeMonitor: boolean;
+  autoNavigateMonitorAfterFlash: boolean;
   monitorMaxLines: number;
 
   setTheme: (theme: ThemePreset) => void;
@@ -28,6 +29,7 @@ interface SettingsStore {
   setEncoding: (enc: string) => void;
   setAutoReconnect: (reconnect: boolean) => void;
   setAutoResumeMonitor: (resume: boolean) => void;
+  setAutoNavigateMonitorAfterFlash: (navigate: boolean) => void;
   applyTheme: () => void;
   applyUiScale: () => void;
   persist: () => void;
@@ -62,6 +64,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   encoding: saved.encoding || "UTF-8",
   autoReconnect: saved.autoReconnect ?? true,
   autoResumeMonitor: saved.autoResumeMonitor ?? true,
+  autoNavigateMonitorAfterFlash: saved.autoNavigateMonitorAfterFlash ?? true,
   monitorMaxLines: saved.monitorMaxLines || 50000,
 
   setTheme: (theme) => {
@@ -110,6 +113,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ autoResumeMonitor });
     get().persist();
   },
+  setAutoNavigateMonitorAfterFlash: (autoNavigateMonitorAfterFlash) => {
+    set({ autoNavigateMonitorAfterFlash });
+    get().persist();
+  },
   applyTheme: () => {
     const { theme } = get();
     const resolved = theme === "system" ? getSystemTheme() : theme;
@@ -133,6 +140,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       encoding: state.encoding,
       autoReconnect: state.autoReconnect,
       autoResumeMonitor: state.autoResumeMonitor,
+      autoNavigateMonitorAfterFlash: state.autoNavigateMonitorAfterFlash,
       monitorMaxLines: state.monitorMaxLines,
     };
     localStorage.setItem("serialhelper-settings", JSON.stringify(toSave));

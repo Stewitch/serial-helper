@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { Sun, Moon, Monitor, Type, Clock, ArrowDown, Link, Globe, AlignLeft, Settings } from "lucide-react";
+import { useFlashStore } from "@/stores/flashStore";
+import { Sun, Moon, Monitor, Type, Clock, ArrowDown, Link, Globe, AlignLeft, Settings, Zap, ShieldCheck, Play, CornerDownLeft } from "lucide-react";
 import { Toggle } from "@/components/shared/Toggle";
 import { ThemeSelect } from "@/components/shared/ThemeSelect";
 import type { SelectOption } from "@/components/shared/ThemeSelect";
@@ -24,6 +25,14 @@ export function SettingsPage() {
   const setAutoScroll = useSettingsStore((s) => s.setAutoScroll);
   const autoReconnect = useSettingsStore((s) => s.autoReconnect);
   const setAutoReconnect = useSettingsStore((s) => s.setAutoReconnect);
+  const autoResumeMonitor = useSettingsStore((s) => s.autoResumeMonitor);
+  const setAutoResumeMonitor = useSettingsStore((s) => s.setAutoResumeMonitor);
+  const autoNavigateMonitorAfterFlash = useSettingsStore((s) => s.autoNavigateMonitorAfterFlash);
+  const setAutoNavigateMonitorAfterFlash = useSettingsStore((s) => s.setAutoNavigateMonitorAfterFlash);
+  const verify = useFlashStore((s) => s.verify);
+  const setVerify = useFlashStore((s) => s.setVerify);
+  const runAfter = useFlashStore((s) => s.runAfter);
+  const setRunAfter = useFlashStore((s) => s.setRunAfter);
 
   const handleLanguageChange = (lang: string) => {
     setLanguage(lang);
@@ -215,12 +224,58 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* Flash Defaults Placeholder */}
+      {/* Flash Defaults */}
       <div className={sectionClass}>
-        <h3 className={sectionTitleClass}>{t("flashDefaults")}</h3>
-        <p className="text-[0.6875rem] text-text-muted">
-          Flash settings will be available in Phase 2.
-        </p>
+        <h3 className={sectionTitleClass}>
+          <Zap size={14} className="text-text-muted" />
+          {t("flashDefaults")}
+        </h3>
+
+        <div className={rowClass}>
+          <div className="flex items-center gap-2">
+            <ShieldCheck size={13} className="text-text-muted" />
+            <div>
+              <span className={labelClass}>{t("flashVerify", { defaultValue: "Verify after flash" })}</span>
+              <p className={hintClass}>{t("flashVerifyDesc", { defaultValue: "Run read-back verification after programming" })}</p>
+            </div>
+          </div>
+          <Toggle active={verify} onClick={() => setVerify(!verify)} />
+        </div>
+
+        <div className={rowClass}>
+          <div className="flex items-center gap-2">
+            <Play size={13} className="text-text-muted" />
+            <div>
+              <span className={labelClass}>{t("flashRunAfter", { defaultValue: "Run after flash" })}</span>
+              <p className={hintClass}>{t("flashRunAfterDesc", { defaultValue: "Leave bootloader and start the application after a successful flash" })}</p>
+            </div>
+          </div>
+          <Toggle active={runAfter} onClick={() => setRunAfter(!runAfter)} />
+        </div>
+
+        <div className={rowClass}>
+          <div className="flex items-center gap-2">
+            <Monitor size={13} className="text-text-muted" />
+            <div>
+              <span className={labelClass}>{t("flashResumeMonitor", { defaultValue: "Resume monitor after flash" })}</span>
+              <p className={hintClass}>{t("flashResumeMonitorDesc", { defaultValue: "Reopen the serial monitor after a successful flash" })}</p>
+            </div>
+          </div>
+          <Toggle active={autoResumeMonitor} onClick={() => setAutoResumeMonitor(!autoResumeMonitor)} />
+        </div>
+
+        {autoResumeMonitor && (
+          <div className="ml-6 flex items-center justify-between py-2">
+            <div className="flex items-center gap-2">
+              <CornerDownLeft size={12} className="text-text-muted" />
+              <div>
+                <span className="text-[0.6875rem] text-text-muted">{t("flashNavigateMonitor", { defaultValue: "Switch to monitor page" })}</span>
+                <p className={hintClass}>{t("flashNavigateMonitorDesc", { defaultValue: "Automatically return to the monitor page after monitor resume" })}</p>
+              </div>
+            </div>
+            <Toggle active={autoNavigateMonitorAfterFlash} onClick={() => setAutoNavigateMonitorAfterFlash(!autoNavigateMonitorAfterFlash)} />
+          </div>
+        )}
       </div>
 
       {/* About */}

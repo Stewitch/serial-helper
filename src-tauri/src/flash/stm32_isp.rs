@@ -26,6 +26,7 @@ const NACK: u8 = 0x1F;
 const SYNC_BYTE: u8 = 0x7F;
 const DEFAULT_TIMEOUT_MS: u64 = 5000;
 const BOOTLOADER_STATUS_BYTES: &[u8] = &[ACK, NACK, 0xFC];
+const ERASE_TIMEOUT_MS: u64 = 60_000;
 
 impl Stm32Isp {
     pub fn new(mut port: Box<dyn SerialPort>) -> AppResult<Self> {
@@ -316,7 +317,7 @@ impl Stm32Isp {
 
         self.send_command(erase_cmd)?;
 
-        self.set_timeout(15_000)?;
+        self.set_timeout(ERASE_TIMEOUT_MS)?;
         let result = if erase_cmd == CMD_EXTENDED_ERASE {
             self.port.write_all(&[0xFF, 0xFF, 0x00])?;
             self.port.flush()?;

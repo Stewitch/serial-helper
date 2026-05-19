@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { MonitorView } from "@/components/monitor/MonitorView";
@@ -6,11 +6,10 @@ import { FlashPanel } from "@/components/flash/FlashPanel";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { useAppStore } from "@/stores/appStore";
 
-type Page = "monitor" | "flash" | "settings";
-
 export function AppShell() {
-  const [activePage, setActivePage] = useState<Page>("monitor");
   const appState = useAppStore((s) => s.appState);
+  const activePage = useAppStore((s) => s.activePage);
+  const setActivePage = useAppStore((s) => s.setActivePage);
 
   useEffect(() => {
     if (appState === "FLASHING") {
