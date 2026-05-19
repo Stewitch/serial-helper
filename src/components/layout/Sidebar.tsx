@@ -1,21 +1,21 @@
 import { useTranslation } from "react-i18next";
 import { useSerialStore } from "@/stores/serialStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import type { AppPage } from "@/stores/appStore";
 import { usePortScanner } from "@/hooks/usePortScanner";
-import { Plug, Zap, Settings, Monitor, ArrowRightLeft, WifiOff } from "lucide-react";
+import { Plug, Zap, Settings, Monitor, ArrowRightLeft, WifiOff, Boxes } from "lucide-react";
 import clsx from "clsx";
 import type { PortInfo } from "@/types/serial";
 
-type Page = "monitor" | "flash" | "settings";
-
 interface SidebarProps {
-  activePage: Page;
-  onNavigate: (page: Page) => void;
+  activePage: AppPage;
+  onNavigate: (page: AppPage) => void;
 }
 
-const navItems: { id: Page; Icon: typeof Monitor; labelKey: string }[] = [
+const navItems: { id: AppPage; Icon: typeof Monitor; labelKey: string }[] = [
   { id: "monitor", Icon: Monitor, labelKey: "monitor:title" },
   { id: "flash", Icon: Zap, labelKey: "flash:title" },
+  { id: "modules", Icon: Boxes, labelKey: "settings:moduleManagement" },
   { id: "settings", Icon: Settings, labelKey: "settings:title" },
 ];
 

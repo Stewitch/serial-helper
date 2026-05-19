@@ -3,6 +3,7 @@ import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { MonitorView } from "@/components/monitor/MonitorView";
 import { FlashPanel } from "@/components/flash/FlashPanel";
+import { ModuleManager } from "@/components/modules/ModuleManager";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { useAppStore } from "@/stores/appStore";
 
@@ -24,6 +25,7 @@ export function AppShell() {
         <main className="flex-1 flex flex-col overflow-hidden bg-surface theme-transition">
           {activePage === "monitor" && <MonitorView />}
           {activePage === "flash" && <FlashPanel />}
+          {activePage === "modules" && <ModuleManager />}
           {activePage === "settings" && <SettingsPage />}
         </main>
       </div>

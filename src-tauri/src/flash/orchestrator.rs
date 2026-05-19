@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelpLink {
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChipInfo {
     pub family: String,
     pub variant: String,
@@ -31,6 +37,10 @@ pub struct EnvStatus {
     pub ready: bool,
     pub missing_tools: Vec<String>,
     pub messages: Vec<String>,
+    pub version: Option<String>,
+    pub install_hint: Option<String>,
+    pub install_steps: Vec<String>,
+    pub references: Vec<HelpLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { AppState } from "@/types/flash";
 
-export type AppPage = "monitor" | "flash" | "settings";
+export type AppPage = "monitor" | "flash" | "modules" | "settings";
 
 interface AppStore {
   appState: AppState;
