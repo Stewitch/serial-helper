@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::firmware::FirmwareData;
@@ -15,6 +16,7 @@ pub struct FirmwareCacheEntry {
 pub struct AppState {
     pub serial_manager: Arc<RwLock<SerialManager>>,
     pub parsed_firmware_cache: Arc<RwLock<HashMap<String, FirmwareCacheEntry>>>,
+    pub cancel_flag: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -22,6 +24,7 @@ impl AppState {
         Self {
             serial_manager: Arc::new(RwLock::new(SerialManager::new())),
             parsed_firmware_cache: Arc::new(RwLock::new(HashMap::new())),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 }

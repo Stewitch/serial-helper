@@ -23,7 +23,8 @@
       "Bash(python3 -c \"from PIL import Image; print\\('OK'\\)\")",
       "Bash(curl -sL \"https://raw.githubusercontent.com/bluerobotics/stm32flash-code/master/init.c\")",
       "Bash(curl -sL \"https://raw.githubusercontent.com/bluerobotics/stm32flash-code/master/stm32.c\")",
-      "Bash(where stm32flash *)"
+      "Bash(where stm32flash *)",
+      "Bash(python \"D:/WorkSpaces/Code/P_Projects/SerialHelper/scripts/process-logo.py\" \"D:/WorkSpaces/Code/P_Projects/SerialHelper/logo-new.png\" --threshold 30)"
     ]
   }
 }

@@ -1,5 +1,8 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -10,6 +13,7 @@ use crate::error::{AppError, AppResult};
 pub struct Stm32Isp {
     port: Box<dyn SerialPort>,
     pending_rx: VecDeque<u8>,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 const CMD_GET: u8 = 0x00;
@@ -28,14 +32,19 @@ const NACK: u8 = 0x1F;
 const SYNC_BYTE: u8 = 0x7F;
 const DEFAULT_TIMEOUT_MS: u64 = 5000;
 const BOOTLOADER_STATUS_BYTES: &[u8] = &[ACK, NACK, 0xFC];
-const ERASE_TIMEOUT_MS: u64 = 60_000;
+
+fn erase_timeout_ms(flash_kb: u32) -> u64 {
+    let ms = 5_000u64.saturating_add(flash_kb as u64 * 50);
+    ms.clamp(10_000, 120_000)
+}
 
 impl Stm32Isp {
-    pub fn new(mut port: Box<dyn SerialPort>) -> AppResult<Self> {
+    pub fn new(mut port: Box<dyn SerialPort>, cancel_flag: Arc<AtomicBool>) -> AppResult<Self> {
         port.set_timeout(Duration::from_secs(3))?;
         Ok(Self {
             port,
             pending_rx: VecDeque::new(),
+            cancel_flag,
         })
     }
 
@@ -64,9 +73,28 @@ impl Stm32Isp {
             return Ok(byte);
         }
 
+        self.set_timeout(200)?;
+
         let mut buf = [0u8; 1];
-        self.port.read_exact(&mut buf)?;
-        Ok(buf[0])
+        loop {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                return Err(AppError::FlashCancelled);
+            }
+            match self.port.read(&mut buf) {
+                Ok(1) => {
+                    self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                    return Ok(buf[0]);
+                }
+                Ok(0) => continue,
+                Ok(_) => continue,
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                Err(e) => {
+                    self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                    return Err(AppError::SerialError(e.to_string()));
+                }
+            }
+        }
     }
 
     fn read_vec(&mut self, len: usize) -> AppResult<Vec<u8>> {
@@ -80,8 +108,31 @@ impl Stm32Isp {
                 continue;
             }
 
-            self.port.read_exact(&mut data[offset..])?;
-            break;
+            self.set_timeout(200)?;
+
+            loop {
+                if self.cancel_flag.load(Ordering::Relaxed) {
+                    self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                    return Err(AppError::FlashCancelled);
+                }
+                match self.port.read(&mut data[offset..]) {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        offset += n;
+                        break;
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(e) => {
+                        self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                        return Err(AppError::SerialError(e.to_string()));
+                    }
+                }
+            }
+
+            self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+            if offset >= len {
+                break;
+            }
         }
 
         Ok(data)
@@ -118,6 +169,11 @@ impl Stm32Isp {
         self.set_timeout(10)?;
 
         loop {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                return Err(AppError::FlashCancelled);
+            }
+
             match self.port.read(&mut buf) {
                 Ok(0) => {}
                 Ok(n) => {
@@ -125,7 +181,9 @@ impl Stm32Isp {
                     saw_data = true;
                     last_data_at = Instant::now();
                 }
-                Err(_) => {}
+                Err(_) => {
+                    sleep(Duration::from_millis(1));
+                }
             }
 
             let now = Instant::now();
@@ -172,6 +230,11 @@ impl Stm32Isp {
         let mut last_report = start;
 
         loop {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                self.set_timeout(DEFAULT_TIMEOUT_MS)?;
+                return Err(AppError::FlashCancelled);
+            }
+
             self.port.write_all(&[SYNC_BYTE])?;
             self.port.flush()?;
             let batch = self.wait_for_quiet(20, 180)?;
@@ -220,6 +283,10 @@ impl Stm32Isp {
 
     fn send_command(&mut self, cmd: u8) -> AppResult<()> {
         for attempt in 0..3 {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                return Err(AppError::FlashCancelled);
+            }
+
             self.port.write_all(&[cmd, !cmd])?;
             self.port.flush()?;
 
@@ -312,10 +379,10 @@ impl Stm32Isp {
         Ok((device_id, pid))
     }
 
-    fn erase_with_command(&mut self, erase_cmd: u8) -> AppResult<()> {
+    fn erase_with_command(&mut self, erase_cmd: u8, timeout_ms: u64) -> AppResult<()> {
         self.send_command(erase_cmd)?;
 
-        self.set_timeout(ERASE_TIMEOUT_MS)?;
+        self.set_timeout(timeout_ms)?;
         let result = if erase_cmd == CMD_EXTENDED_ERASE {
             self.port.write_all(&[0xFF, 0xFF, 0x00])?;
             self.port.flush()?;
@@ -339,13 +406,14 @@ impl Stm32Isp {
 
     pub fn readout_unprotect(&mut self) -> AppResult<()> {
         self.send_command(CMD_READOUT_UNPROTECT)?;
-        self.set_timeout(ERASE_TIMEOUT_MS)?;
+        self.set_timeout(60_000)?;
         let result = self.expect_ack("Readout Unprotect");
         self.set_timeout(DEFAULT_TIMEOUT_MS)?;
         result
     }
 
-    pub fn erase_flash(&mut self, commands: &[u8]) -> AppResult<()> {
+    pub fn erase_flash(&mut self, commands: &[u8], flash_kb: u32) -> AppResult<()> {
+        let timeout_ms = erase_timeout_ms(flash_kb);
         let mut candidates = Vec::new();
         if Self::supports_command(commands, CMD_EXTENDED_ERASE) {
             candidates.push(CMD_EXTENDED_ERASE);
@@ -367,7 +435,7 @@ impl Stm32Isp {
 
         let mut last_error: Option<AppError> = None;
         for (index, erase_cmd) in candidates.iter().enumerate() {
-            match self.erase_with_command(*erase_cmd) {
+            match self.erase_with_command(*erase_cmd, timeout_ms) {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_error = Some(err);
@@ -423,7 +491,7 @@ impl Stm32Isp {
         self.expect_ack(&format!("Write {:08x}", address))
     }
 
-    pub fn write_memory(&mut self, mut address: u32, data: &[u8]) -> AppResult<()> {
+    pub fn write_memory(&mut self, address: u32, data: &[u8]) -> AppResult<()> {
         self.write_memory_with_progress(address, data, |_address, _len| {})
     }
 
@@ -436,6 +504,10 @@ impl Stm32Isp {
         }
 
         for chunk in data.chunks(256) {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                return Err(AppError::FlashCancelled);
+            }
+
             let chunk_start = address;
             if chunk.len() % 4 == 0 {
                 self.write_block(address, chunk)?;
@@ -457,7 +529,7 @@ impl Stm32Isp {
         Ok(())
     }
 
-    pub fn verify_memory(&mut self, mut address: u32, data: &[u8]) -> AppResult<()> {
+    pub fn verify_memory(&mut self, address: u32, data: &[u8]) -> AppResult<()> {
         self.verify_memory_with_progress(address, data, |_address, _len| {})
     }
 
@@ -470,6 +542,10 @@ impl Stm32Isp {
         }
 
         for chunk in data.chunks(256) {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                return Err(AppError::FlashCancelled);
+            }
+
             let chunk_start = address;
             let read_data = self.read_memory(address, chunk.len())?;
 

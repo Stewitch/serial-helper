@@ -206,6 +206,7 @@ fn connect_and_enter(
     baud_rate: u32,
     auto_reset: bool,
     dtr_rts: &DtrRtsConfig,
+    cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     app: &AppHandle,
 ) -> Result<Stm32Isp, AppError> {
     use std::time::Duration;
@@ -220,7 +221,7 @@ fn connect_and_enter(
         .open()
         .map_err(|e| AppError::SerialError(format!("Cannot open {}: {}", port_name, e)))?;
 
-    let mut isp = Stm32Isp::new(serial_port)?;
+    let mut isp = Stm32Isp::new(serial_port, cancel_flag)?;
     // Let the USB-to-serial adapter settle
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -356,12 +357,13 @@ fn try_unprotect_and_reenter(
 fn erase_with_recovery(
     isp: &mut Stm32Isp,
     bootloader_commands: &[u8],
+    flash_kb: u32,
     auto_reset: bool,
     dtr_rts: &DtrRtsConfig,
     app: &AppHandle,
     version_status_bytes: &[u8],
 ) -> Result<(), AppError> {
-    if let Err(err) = isp.erase_flash(bootloader_commands) {
+    if let Err(err) = isp.erase_flash(bootloader_commands, flash_kb) {
         let err_text = err.to_string();
         if err_text.contains("denied")
             || err_text.contains("Cmd 43 bad response [1f]")
@@ -369,7 +371,7 @@ fn erase_with_recovery(
         {
             try_unprotect_and_reenter(isp, auto_reset, dtr_rts, app)?;
             emit_progress(app, "erasing", 39, "Retrying erase after unprotect...");
-            isp.erase_flash(bootloader_commands)?;
+            isp.erase_flash(bootloader_commands, flash_kb)?;
             return Ok(());
         }
 
@@ -492,6 +494,70 @@ fn write_firmware(
 // Tauri Commands
 // ═══════════════════════════════════════════════════════
 
+fn parse_firmware_with_cache(
+    file_path: String,
+    base_address: Option<u32>,
+    cache: std::sync::Arc<parking_lot::RwLock<std::collections::HashMap<String, FirmwareCacheEntry>>>,
+) -> Result<FirmwareInfo, AppError> {
+    let path = Path::new(&file_path);
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+    let data = fs::read(&file_path)
+        .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    let firmware = match ext.as_str() {
+        "hex" | "ihx" => hex::parse_hex(&filename, &data)?,
+        "bin" => bin::parse_bin(&filename, &data, base_address.unwrap_or(0x0800_0000))?,
+        "" => {
+            return Err(AppError::FirmwareParseError(
+                "Firmware file must have a supported extension (.hex, .ihx, .bin)".into(),
+            ));
+        }
+        _ => {
+            return Err(AppError::FirmwareParseError(format!(
+                "Unsupported firmware format '.{}'. Only .hex/.ihx/.bin are currently supported.",
+                ext
+            )));
+        }
+    };
+
+    {
+        let (size, modified_ms) = file_signature(&file_path)?;
+        cache
+            .write()
+            .insert(
+                file_path.clone(),
+                FirmwareCacheEntry {
+                    size,
+                    modified_ms,
+                    firmware: firmware.clone(),
+                },
+            );
+    }
+
+    let mut hasher = Sha256::new();
+    for seg in &firmware.segments { hasher.update(&seg.data); }
+
+    let format_name = match firmware.source_format {
+        crate::firmware::FirmwareFormat::Hex => "Intel HEX".to_string(),
+        crate::firmware::FirmwareFormat::Bin => "Binary".to_string(),
+        _ => "Unknown".to_string(),
+    };
+
+    Ok(FirmwareInfo {
+        filename: firmware.filename,
+        format: format_name,
+        size: firmware.total_size,
+        segments: firmware.segments.iter().map(|s| SegmentInfo {
+            address: s.address,
+            size: s.data.len(),
+            range: format!("{:#010X} - {:#010X}", s.address, s.address + s.data.len() as u32),
+        }).collect(),
+        checksum: format!("{:x}", hasher.finalize()),
+    })
+}
+
 /// Parse a firmware file and return info
 #[tauri::command]
 pub fn parse_firmware(file_path: String, base_address: Option<u32>) -> Result<FirmwareInfo, AppError> {
@@ -564,12 +630,17 @@ fn parse_firmware_with_cache_inner(
 }
 
 #[tauri::command]
-pub fn parse_firmware_cached(
-    state: State<AppState>,
+pub async fn parse_firmware_cached(
+    state: State<'_, AppState>,
     file_path: String,
     base_address: Option<u32>,
 ) -> Result<FirmwareInfo, AppError> {
-    parse_firmware_with_cache_inner(file_path, base_address, Some(&state))
+    let cache = state.parsed_firmware_cache.clone();
+    tokio::task::spawn_blocking(move || {
+        parse_firmware_with_cache(file_path, base_address, cache)
+    })
+    .await
+    .map_err(|e| AppError::Generic(format!("Parse task panicked: {}", e)))?
 }
 
 /// Connect, detect chip, and return chip info — read-only, no erase/write
@@ -589,6 +660,7 @@ pub async fn read_chip_info(
         baud_rate,
         options.auto_reset,
         &options.dtr_rts,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         &app,
     )?;
     detect_chip(&mut isp, &app)
@@ -611,6 +683,7 @@ pub async fn erase_chip(
         baud_rate,
         options.auto_reset,
         &options.dtr_rts,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         &app,
     )?;
 
@@ -654,9 +727,13 @@ pub async fn erase_chip(
     );
 
     emit_progress(&app, "erasing", 35, "Erasing flash...");
+    let flash_kb = chips::find_chip_by_device_id(device_id)
+        .map(|c| c.flash_kb)
+        .unwrap_or(128);
     erase_with_recovery(
         &mut isp,
         &bootloader_commands,
+        flash_kb,
         options.auto_reset,
         &options.dtr_rts,
         &app,
@@ -689,6 +766,7 @@ pub async fn read_flash(
         baud_rate,
         options.auto_reset,
         &options.dtr_rts,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         &app,
     )?;
 
@@ -769,15 +847,20 @@ pub async fn start_flash(
 ) -> Result<(), AppError> {
     let start = Instant::now();
 
+    // Reset cancel flag for this operation
+    state.cancel_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+    let cancel_flag = state.cancel_flag.clone();
+
     // 1. Parse firmware
     emit_progress(&app, "parsing", 0, "Parsing firmware...");
+    let data = fs::read(&firmware_path)
+        .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
     let (size, modified_ms) = file_signature(&firmware_path)?;
+
     let firmware = if let Some(cached) = state.parsed_firmware_cache.read().get(&firmware_path).cloned() {
         if cached.size == size && cached.modified_ms == modified_ms {
             cached.firmware
         } else {
-            let data = fs::read(&firmware_path)
-                .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
             let parsed = parse_supported_firmware_from_path(&firmware_path, &data)?;
             state.parsed_firmware_cache.write().insert(
                 firmware_path.clone(),
@@ -790,8 +873,6 @@ pub async fn start_flash(
             parsed
         }
     } else {
-        let data = fs::read(&firmware_path)
-            .map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
         let parsed = parse_supported_firmware_from_path(&firmware_path, &data)?;
         state
             .parsed_firmware_cache
@@ -817,7 +898,7 @@ pub async fn start_flash(
     ));
 
     // 2. Connect + enter bootloader
-    let mut isp = connect_and_enter(&port_name, baud_rate, options.auto_reset, &options.dtr_rts, &app)?;
+    let mut isp = connect_and_enter(&port_name, baud_rate, options.auto_reset, &options.dtr_rts, cancel_flag, &app)?;
 
     // 3. Detect chip
     emit_progress(&app, "detecting", 25, "Sending Get (0x00)...");
@@ -871,6 +952,7 @@ pub async fn start_flash(
     erase_with_recovery(
         &mut isp,
         &bootloader_commands,
+        chip.flash_kb,
         options.auto_reset,
         &options.dtr_rts,
         &app,
@@ -925,6 +1007,7 @@ pub async fn start_flash(
 }
 
 #[tauri::command]
-pub fn cancel_flash() -> Result<(), String> {
+pub fn cancel_flash(state: State<AppState>) -> Result<(), String> {
+    state.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }

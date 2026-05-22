@@ -104,7 +104,7 @@ export function FlashPanel() {
   const [flashing, setFlashing] = useState(false);
   const [progress, setProgress] = useState<FlashProgress | null>(null);
   const [flashLog, setFlashLog] = useState<Array<{ id: number; text: string; replaceKey?: string }>>([]);
-  const [flashResult, setFlashResult] = useState<"success" | "error" | null>(null);
+  const [flashResult, setFlashResult] = useState<"success" | "error" | "cancelled" | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
   const portName = useSerialStore((s) => s.config.port_name);
@@ -472,9 +472,15 @@ export function FlashPanel() {
       setFlashResult("success");
       await resumeMonitor(resumeConfig);
     } catch (e) {
-      setFlashResult("error");
-      addLog(`[ERROR] ${extractError(e)}`);
-      setState("FLASH_ERROR");
+      const msg = extractError(e);
+      if (msg.includes("Flash cancelled") || msg.includes("Cancelled")) {
+        setFlashResult("cancelled");
+        addLog(`[INFO] Operation cancelled`);
+      } else {
+        setFlashResult("error");
+        addLog(`[ERROR] ${msg}`);
+        setState("FLASH_ERROR");
+      }
     } finally {
       setFlashing(false);
       if (useAppStore.getState().appState === "FLASHING") {
@@ -498,6 +504,15 @@ export function FlashPanel() {
     connectOptions,
     resumeMonitor,
   ]);
+
+  const handleCancel = useCallback(async () => {
+    try {
+      await invoke("cancel_flash");
+      addLog("[INFO] Cancelling...");
+    } catch (e) {
+      addLog(`[WARN] Cancel failed: ${extractError(e)}`);
+    }
+  }, [addLog]);
 
   const canFlash = Boolean(firmwarePath && portName && !flashing);
   const canHelper = Boolean(portName && !flashing);
@@ -706,6 +721,16 @@ export function FlashPanel() {
             )}
           </button>
 
+          {flashing && (
+            <button
+              onClick={handleCancel}
+              className="w-full py-2 px-4 rounded text-xs font-medium transition-colors flex items-center justify-center gap-2 bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20"
+            >
+              <XCircle size={14} />
+              Cancel
+            </button>
+          )}
+
           {flashing && progress && (
             <div className="rounded-lg border border-border bg-surface-alt/30 p-3 space-y-2">
               <div className="h-1.5 bg-surface-alt rounded-full overflow-hidden border border-border">
@@ -724,11 +749,13 @@ export function FlashPanel() {
                 "p-3 rounded-lg flex items-center gap-2 text-[0.6875rem]",
                 flashResult === "success"
                   ? "bg-green-500/10 border border-green-500/30 text-green-600 dark:text-green-400"
-                  : "bg-flash-error/10 border border-flash-error/30 text-flash-error"
+                  : flashResult === "cancelled"
+                    ? "bg-yellow-500/10 border border-yellow-500/30 text-yellow-600 dark:text-yellow-400"
+                    : "bg-flash-error/10 border border-flash-error/30 text-flash-error"
               )}
             >
-              {flashResult === "success" ? <CheckCircle size={16} /> : <XCircle size={16} />}
-              {flashResult === "success" ? "Flash complete!" : "Flash failed - see log below"}
+              {flashResult === "success" ? <CheckCircle size={16} /> : flashResult === "cancelled" ? <XCircle size={16} /> : <XCircle size={16} />}
+              {flashResult === "success" ? "Flash complete!" : flashResult === "cancelled" ? "Operation cancelled" : "Flash failed - see log below"}
             </div>
           )}
 
