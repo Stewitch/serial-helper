@@ -1,4 +1,9 @@
 {
+  "moduleLabel": "烧录模块",
+  "moduleStm32Isp": "STM32 串口 ISP",
+  "moduleArduinoAvr": "Arduino AVR (avrdude)",
+  "programmer": "编程器",
+  "avrChip": "AVR 芯片",
   "title": "烧录",
   "selectChip": "选择芯片",
   "chipFamily": "芯片系列",

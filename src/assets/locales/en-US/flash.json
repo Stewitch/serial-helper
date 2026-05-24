@@ -1,4 +1,9 @@
 {
+  "moduleLabel": "Flash Module",
+  "moduleStm32Isp": "STM32 Serial ISP",
+  "moduleArduinoAvr": "Arduino AVR (avrdude)",
+  "programmer": "Programmer",
+  "avrChip": "AVR Chip",
   "title": "Flash",
   "selectChip": "Select Chip",
   "chipFamily": "Chip Family",

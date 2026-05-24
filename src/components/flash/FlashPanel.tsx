@@ -119,6 +119,8 @@ export function FlashPanel() {
   const firmware = useFlashStore((s) => s.firmware);
   const firmwarePath = useFlashStore((s) => s.firmwarePath);
   const setFirmwareSelection = useFlashStore((s) => s.setFirmwareSelection);
+  const flashModule = useFlashStore((s) => s.flashModule);
+  const setFlashModule = useFlashStore((s) => s.setFlashModule);
   const optVerify = useFlashStore((s) => s.verify);
   const setOptVerify = useFlashStore((s) => s.setVerify);
   const optRunAfter = useFlashStore((s) => s.runAfter);
@@ -137,6 +139,10 @@ export function FlashPanel() {
   const setFlashReadAddress = useFlashStore((s) => s.setFlashReadAddress);
   const flashReadSize = useFlashStore((s) => s.flashReadSize);
   const setFlashReadSize = useFlashStore((s) => s.setFlashReadSize);
+  const avrProgrammer = useFlashStore((s) => s.avrProgrammer);
+  const setAvrProgrammer = useFlashStore((s) => s.setAvrProgrammer);
+  const avrChip = useFlashStore((s) => s.avrChip);
+  const setAvrChip = useFlashStore((s) => s.setAvrChip);
   const autoResumeMonitor = useSettingsStore((s) => s.autoResumeMonitor);
   const autoNavigateMonitorAfterFlash = useSettingsStore((s) => s.autoNavigateMonitorAfterFlash);
   const setAutoResumeMonitor = useSettingsStore((s) => s.setAutoResumeMonitor);
@@ -458,17 +464,32 @@ export function FlashPanel() {
 
     try {
       resumeConfig = await prepareFlashPort();
-      await invoke("start_flash", {
-        firmwarePath,
-        portName,
-        baudRate,
-        options: {
-          verify: optVerify,
-          runAfter: optRunAfter,
-          autoReset: dtrRtsEnabled,
-          dtrRts: connectOptions.dtrRts,
-        },
-      });
+
+      if (flashModule === "arduino-avr") {
+        await invoke("flash_avr_start", {
+          firmwarePath,
+          portName,
+          options: {
+            programmer: avrProgrammer,
+            chip: avrChip,
+            verify: optVerify,
+            runAfter: optRunAfter,
+          },
+        });
+      } else {
+        await invoke("start_flash", {
+          firmwarePath,
+          portName,
+          baudRate,
+          options: {
+            verify: optVerify,
+            runAfter: optRunAfter,
+            autoReset: dtrRtsEnabled,
+            dtrRts: connectOptions.dtrRts,
+          },
+        });
+      }
+
       setFlashResult("success");
       await resumeMonitor(resumeConfig);
     } catch (e) {
@@ -494,6 +515,9 @@ export function FlashPanel() {
     portName,
     baudRate,
     firmware,
+    flashModule,
+    avrProgrammer,
+    avrChip,
     optVerify,
     optRunAfter,
     dtrRtsEnabled,
@@ -507,12 +531,16 @@ export function FlashPanel() {
 
   const handleCancel = useCallback(async () => {
     try {
-      await invoke("cancel_flash");
+      if (flashModule === "arduino-avr") {
+        await invoke("flash_avr_cancel");
+      } else {
+        await invoke("cancel_flash");
+      }
       addLog("[INFO] Cancelling...");
     } catch (e) {
       addLog(`[WARN] Cancel failed: ${extractError(e)}`);
     }
-  }, [addLog]);
+  }, [addLog, flashModule]);
 
   const canFlash = Boolean(firmwarePath && portName && !flashing);
   const canHelper = Boolean(portName && !flashing);
@@ -530,10 +558,68 @@ export function FlashPanel() {
 
       <div className="flex-1 overflow-auto">
         <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
+          <span className="text-[0.625rem] text-text-muted shrink-0">{t("moduleLabel")}</span>
+          <ThemeSelect
+            value={flashModule}
+            onChange={(v) => {
+              setFlashModule(v);
+              setChipInfo(null);
+              clearLog();
+              setFlashResult(null);
+            }}
+            options={[
+              { value: "stm32-isp", label: t("moduleStm32Isp") },
+              { value: "arduino-avr", label: t("moduleArduinoAvr") },
+            ]}
+            className="min-w-[160px]"
+          />
+          <div className="w-px h-5 bg-border mx-0.5" />
           <PortSelector value={portName} onChange={(p) => setConfig({ port_name: p })} disabled={isConnected || flashing} />
-          <BaudRateInput value={baudRate} onChange={(b) => setConfig({ baud_rate: b })} disabled={isConnected || flashing} />
+          <BaudRateInput value={baudRate} onChange={(b) => setConfig({ baud_rate: b })} disabled={isConnected || flashing || flashModule === "arduino-avr"} />
         </div>
 
+        {flashModule === "arduino-avr" && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
+            <span className="text-[0.625rem] text-text-muted">{t("avrChip")}</span>
+            <ThemeSelect
+              value={avrChip}
+              onChange={setAvrChip}
+              options={[
+                { value: "m328p", label: "ATmega328P (32KB)" },
+                { value: "m328", label: "ATmega328 (32KB)" },
+                { value: "m2560", label: "ATmega2560 (256KB)" },
+                { value: "m32u4", label: "ATmega32U4 (32KB)" },
+                { value: "m168p", label: "ATmega168P (16KB)" },
+                { value: "m168", label: "ATmega168 (16KB)" },
+                { value: "m88p", label: "ATmega88P (8KB)" },
+                { value: "m644p", label: "ATmega644P (64KB)" },
+                { value: "m1284p", label: "ATmega1284P (128KB)" },
+                { value: "t85", label: "ATtiny85 (8KB)" },
+                { value: "t84", label: "ATtiny84 (8KB)" },
+                { value: "m8", label: "ATmega8 (8KB)" },
+              ]}
+              className="min-w-[180px]"
+            />
+            <div className="w-px h-5 bg-border mx-0.5" />
+            <span className="text-[0.625rem] text-text-muted">{t("programmer")}</span>
+            <ThemeSelect
+              value={avrProgrammer}
+              onChange={setAvrProgrammer}
+              options={[
+                { value: "arduino", label: "Arduino" },
+                { value: "avrisp", label: "AVR ISP" },
+                { value: "usbasp", label: "USBasp" },
+                { value: "usbtiny", label: "USBtinyISP" },
+                { value: "stk500v1", label: "STK500 v1" },
+                { value: "stk500v2", label: "STK500 v2" },
+              ]}
+              className="min-w-[120px]"
+            />
+          </div>
+        )}
+
+        {flashModule === "stm32-isp" && (
+        <>
         <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
           <div className="flex items-center gap-2">
             <Toggle active={dtrRtsEnabled} onClick={() => setDtrRtsEnabled(!dtrRtsEnabled)} />
@@ -644,6 +730,8 @@ export function FlashPanel() {
             {t("readFlash")}
           </button>
         </div>
+        </>
+        )}
 
         <div className="p-3 space-y-3">
           {chipInfo && (

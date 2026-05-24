@@ -9,6 +9,7 @@ export interface FirmwareInfo {
 }
 
 interface FlashStoreState {
+  flashModule: string;
   firmwarePath: string;
   firmware: FirmwareInfo | null;
   verify: boolean;
@@ -20,9 +21,12 @@ interface FlashStoreState {
   dtrLevel: string;
   flashReadAddress: string;
   flashReadSize: string;
+  avrProgrammer: string;
+  avrChip: string;
 }
 
 interface FlashStore extends FlashStoreState {
+  setFlashModule: (module: string) => void;
   setFirmwareSelection: (firmwarePath: string, firmware: FirmwareInfo | null) => void;
   setVerify: (verify: boolean) => void;
   setRunAfter: (runAfter: boolean) => void;
@@ -33,6 +37,8 @@ interface FlashStore extends FlashStoreState {
   setDtrLevel: (value: string) => void;
   setFlashReadAddress: (value: string) => void;
   setFlashReadSize: (value: string) => void;
+  setAvrProgrammer: (value: string) => void;
+  setAvrChip: (value: string) => void;
   clearFirmware: () => void;
   persist: () => void;
 }
@@ -50,6 +56,7 @@ function loadFlashState(): Partial<FlashStoreState> {
 const saved = loadFlashState();
 
 export const useFlashStore = create<FlashStore>((set, get) => ({
+  flashModule: saved.flashModule || "stm32-isp",
   firmwarePath: saved.firmwarePath || "",
   firmware: saved.firmware || null,
   verify: saved.verify ?? true,
@@ -61,7 +68,13 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
   dtrLevel: saved.dtrLevel || "high",
   flashReadAddress: saved.flashReadAddress || "0x08000000",
   flashReadSize: saved.flashReadSize || "0x20000",
+  avrProgrammer: saved.avrProgrammer || "arduino",
+  avrChip: saved.avrChip || "m328p",
 
+  setFlashModule: (flashModule) => {
+    set({ flashModule });
+    get().persist();
+  },
   setFirmwareSelection: (firmwarePath, firmware) => {
     set({ firmwarePath, firmware });
     get().persist();
@@ -102,6 +115,14 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
     set({ flashReadSize });
     get().persist();
   },
+  setAvrProgrammer: (avrProgrammer) => {
+    set({ avrProgrammer });
+    get().persist();
+  },
+  setAvrChip: (avrChip) => {
+    set({ avrChip });
+    get().persist();
+  },
   clearFirmware: () => {
     set({ firmwarePath: "", firmware: null });
     get().persist();
@@ -109,6 +130,7 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
   persist: () => {
     const state = get();
     const toSave: FlashStoreState = {
+      flashModule: state.flashModule,
       firmwarePath: state.firmwarePath,
       firmware: state.firmware,
       verify: state.verify,
@@ -120,6 +142,8 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
       dtrLevel: state.dtrLevel,
       flashReadAddress: state.flashReadAddress,
       flashReadSize: state.flashReadSize,
+      avrProgrammer: state.avrProgrammer,
+      avrChip: state.avrChip,
     };
     localStorage.setItem("serialhelper-flash", JSON.stringify(toSave));
   },

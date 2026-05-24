@@ -85,12 +85,17 @@ pub fn check_module_env(module_id: String) -> Result<EnvStatus, String> {
         }),
         "arduino-avr" => {
             let ready = ToolChecker::is_installed("avrdude");
-            let version = ToolChecker::get_version("avrdude", "-?");
-            let messages = if let Some(ref version_text) = version {
-                vec![format!(
-                    "avrdude detected: {}",
-                    version_text.lines().next().unwrap_or("available")
-                )]
+            let raw_version = ToolChecker::get_version("avrdude", "--version");
+            let version = raw_version
+                .as_ref()
+                .and_then(|output| {
+                    output
+                        .lines()
+                        .next()
+                        .map(|line| line.trim().to_string())
+                });
+            let messages = if let Some(ref v) = version {
+                vec![format!("avrdude detected: {}", v)]
             } else if ready {
                 vec!["avrdude detected.".into()]
             } else {
