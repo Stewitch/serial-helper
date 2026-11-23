@@ -118,7 +118,7 @@ impl FlashModule for ArduinoAvr {
                 install_steps: vec![
                     "Download the Windows zip from the AVRDUDE releases page and unpack it.".into(),
                     "Add the folder that contains avrdude.exe to PATH.".into(),
-                    "Restart SerialHelper and check again.".into(),
+                    "Restart Serial Helper and check again.".into(),
                 ],
                 references: refs,
             };
@@ -162,7 +162,7 @@ impl FlashModule for Stc89Stcgal {
                 install_hint: Some("Install Python 3, then install stcgal with pip.".into()),
                 install_steps: vec![
                     "Install Python 3 from python.org and tick \"Add python.exe to PATH\".".into(),
-                    "Restart SerialHelper.".into(),
+                    "Restart Serial Helper.".into(),
                     "Click \"Install stcgal\" here, or run `python -m pip install stcgal`.".into(),
                 ],
                 references: refs,
@@ -183,7 +183,7 @@ impl FlashModule for Stc89Stcgal {
                 Some(version),
                 vec![
                     format!("Runs stcgal with {}.", python.display()),
-                    "SerialHelper cycles the board's power itself, so the off time and pin level can be set on the flash page.".into(),
+                    "Serial Helper cycles the board's power itself, so the off time and pin level can be set on the flash page.".into(),
                 ],
                 refs,
             ),

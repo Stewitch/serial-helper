@@ -52,7 +52,7 @@ interface FlashStore extends FlashStoreState {
 
 function loadFlashState(): Partial<FlashStoreState> {
   try {
-    const raw = localStorage.getItem("serialhelper-flash");
+    const raw = localStorage.getItem("serial-helper-flash");
     if (raw) return JSON.parse(raw) as Partial<FlashStoreState>;
   } catch {
     // ignore
@@ -168,6 +168,6 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
       stcProtocol: state.stcProtocol,
       stcBaud: state.stcBaud,
     };
-    localStorage.setItem("serialhelper-flash", JSON.stringify(toSave));
+    localStorage.setItem("serial-helper-flash", JSON.stringify(toSave));
   },
 }));

@@ -145,7 +145,7 @@ pub fn find_python() -> Option<Python> {
 
 /// Writes the wrapper script to a private temp folder and returns its path.
 fn script_path() -> AppResult<PathBuf> {
-    let dir = std::env::temp_dir().join("serialhelper-stc89");
+    let dir = std::env::temp_dir().join("serial-helper-stc89");
     std::fs::create_dir_all(&dir).map_err(|e| AppError::Generic(format!("Cannot create {}: {}", dir.display(), e)))?;
     let path = dir.join("stc89_flash.py");
     let current = std::fs::read_to_string(&path).ok();
@@ -261,7 +261,7 @@ pub fn flash(
     let script = script_path()?;
 
     let tmp = tempfile::Builder::new()
-        .prefix("serialhelper-stc89-")
+        .prefix("serial-helper-stc89-")
         .suffix(".bin")
         .tempfile()
         .map_err(|e| AppError::Generic(format!("Cannot create temp file: {}", e)))?;

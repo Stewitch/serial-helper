@@ -1,4 +1,4 @@
-"""SerialHelper STC89/STC90 flasher.
+"""Serial Helper STC89/STC90 flasher.
 
 Uses stcgal (https://github.com/grigorig/stcgal, MIT) for the ISP protocol, but
 opens the serial port and cycles the board's power itself:

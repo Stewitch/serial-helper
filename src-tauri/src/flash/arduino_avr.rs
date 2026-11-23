@@ -47,7 +47,7 @@ impl AvrdudeFlasher {
         progress: mpsc::Sender<FlashProgress>,
     ) -> AppResult<()> {
         let tmp = tempfile::Builder::new()
-            .prefix("serialhelper-avr-")
+            .prefix("serial-helper-avr-")
             .suffix(extension_for(format))
             .tempfile()
             .map_err(|e| AppError::Generic(format!("Cannot create temp file: {}", e)))?;

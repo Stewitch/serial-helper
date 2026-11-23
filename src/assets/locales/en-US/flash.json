@@ -158,5 +158,5 @@
   "stcProtocolNew": "7.x (stc89a)",
   "stcBaud": "Transfer baud",
   "stepConnectStc": "Power cycle and handshake",
-  "readyHintStc": "Pick the port and click Start. SerialHelper cuts and restores the board's power itself."
+  "readyHintStc": "Pick the port and click Start. Serial Helper cuts and restores the board's power itself."
 }

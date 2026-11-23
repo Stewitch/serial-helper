@@ -40,5 +40,5 @@ pub fn run() {
             commands::module_cmd::module_flash,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running SerialHelper");
+        .expect("error while running Serial Helper");
 }
