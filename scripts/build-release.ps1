@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
-Write-Host "Building SerialHelper release from $root"
+Write-Host "Building Serial Helper release from $root"
 
 if (-not $NoSyncVersion) {
   Write-Host "Syncing version metadata..."

@@ -15,8 +15,18 @@ const cargo = fs.readFileSync(cargoPath, "utf8").replace(
 );
 fs.writeFileSync(cargoPath, cargo, "utf8");
 
+// Keep Cargo.lock's entry for this crate in step, so a bump commits cleanly.
+const lockPath = path.join(root, "src-tauri", "Cargo.lock");
+if (fs.existsSync(lockPath)) {
+  const lock = fs.readFileSync(lockPath, "utf8").replace(
+    /(\[\[package\]\]\r?\nname = "serial-helper"\r?\nversion = )".*"/,
+    `$1"${version}"`
+  );
+  fs.writeFileSync(lockPath, lock, "utf8");
+}
+
 const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, "utf8"));
 tauriConfig.version = version;
 fs.writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`, "utf8");
 
-console.log(`Synchronized version ${version} to Cargo.toml and tauri.conf.json`);
+console.log(`Synchronized version ${version} to Cargo.toml, Cargo.lock and tauri.conf.json`);

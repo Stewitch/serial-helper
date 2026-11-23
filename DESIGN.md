@@ -1,4 +1,4 @@
-# SerialHelper — 串口烧录+监视器一体化工具 设计方案（定稿）
+# Serial Helper — 串口烧录+监视器一体化工具 设计方案（定稿）
 
 ## 1. 技术栈
 
@@ -288,7 +288,7 @@ builtin = true
 category = "arm"
 
 [module.authors]
-maintainer = "SerialHelper Team"
+maintainer = "Serial Helper Team"
 
 # 模块依赖的外部工具
 [[tools]]
@@ -536,7 +536,7 @@ src/
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  SerialHelper    [端口: COM3 ▼] [115200 ▼] [8N1 ▼] [连接/断开]│  ← TitleBar
+│  Serial Helper    [端口: COM3 ▼] [115200 ▼] [8N1 ▼] [连接/断开]│  ← TitleBar
 ├───────────┬──────────────────────────────────────────────────┤
 │  侧边栏   │              主内容区                             │
 │           │                                                   │
@@ -567,7 +567,7 @@ src/
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  SerialHelper    [端口: COM3 ▼] [115200 ▼] [8N1 ▼] [正在烧录]│
+│  Serial Helper    [端口: COM3 ▼] [115200 ▼] [8N1 ▼] [正在烧录]│
 ├───────────┬──────────────────────────────────────────────────┤
 │  侧边栏   │              主内容区                             │
 │           │                                                   │
@@ -832,9 +832,9 @@ React 侧: requestAnimationFrame 批量追加到虚拟滚动列表
 ## 9. 配置持久化
 
 ```rust
-// 配置文件位置: %APPDATA%/SerialHelper/config.json
-//                ~/Library/Application Support/SerialHelper/config.json (macOS)
-//                ~/.config/SerialHelper/config.json (Linux)
+// 配置文件位置: %APPDATA%/com.serial-helper.app/config.json
+//                ~/Library/Application Support/com.serial-helper.app/config.json (macOS)
+//                ~/.config/com.serial-helper.app/config.json (Linux)
 
 #[derive(Serialize, Deserialize)]
 pub struct AppConfig {
@@ -980,4 +980,4 @@ pub enum AppError {
 
 ---
 
-*本文档为 SerialHelper 最终设计方案定稿，后续开发将基于此文档进行。*
+*本文档为 Serial Helper 最终设计方案定稿，后续开发将基于此文档进行。*

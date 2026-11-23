@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { normalizeEncoding } from "@/lib/textCodec";
+import { migrateKey } from "@/lib/storage";
 
 type ThemePreset = "system" | "light" | "dark";
 type LineEnding = "CRLF" | "LF" | "CR" | "NONE";
@@ -40,7 +41,7 @@ interface SettingsStore {
 
 function loadSettings(): Partial<SettingsStore> {
   try {
-    const raw = localStorage.getItem("serial-helper-settings");
+    const raw = localStorage.getItem("serial-helper-settings") ?? migrateKey("serialhelper-settings", "serial-helper-settings");
     if (raw) return JSON.parse(raw);
   } catch {}
   return {};

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Logo processing script for SerialHelper.
+Logo processing script for Serial Helper.
 Converts a source PNG to the required icon sizes, removing near-black
 background pixels (making them transparent).
 
@@ -92,7 +92,7 @@ def generate_icons(src_path: Path, threshold: int, dry_run: bool) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process SerialHelper logo")
+    parser = argparse.ArgumentParser(description="Process Serial Helper logo")
     parser.add_argument("source", help="Path to source PNG image")
     parser.add_argument(
         "--threshold", type=int, default=30,

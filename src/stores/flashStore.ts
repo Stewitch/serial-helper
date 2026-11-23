@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { migrateKey } from "@/lib/storage";
 
 export interface FirmwareInfo {
   filename: string;
@@ -52,7 +53,7 @@ interface FlashStore extends FlashStoreState {
 
 function loadFlashState(): Partial<FlashStoreState> {
   try {
-    const raw = localStorage.getItem("serial-helper-flash");
+    const raw = localStorage.getItem("serial-helper-flash") ?? migrateKey("serialhelper-flash", "serial-helper-flash");
     if (raw) return JSON.parse(raw) as Partial<FlashStoreState>;
   } catch {
     // ignore

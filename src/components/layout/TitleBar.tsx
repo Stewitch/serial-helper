@@ -35,7 +35,7 @@ export function TitleBar() {
         </button>
       </div>
       <span data-tauri-drag-region className="text-sm font-semibold text-ink-2">
-        Serial Helper
+        {t("common:appTitle")}
       </span>
       <div data-tauri-drag-region className="flex-1 self-stretch" />
       {inTauri && <WindowControls />}
