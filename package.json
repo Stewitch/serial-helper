@@ -1,7 +1,7 @@
 {
   "name": "serial-helper",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "sync:version": "node ./scripts/sync-version.mjs",
+    "version": "node ./scripts/sync-version.mjs && git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json",
     "build:release": "powershell -ExecutionPolicy Bypass -File ./scripts/build-release.ps1"
   },
   "dependencies": {
