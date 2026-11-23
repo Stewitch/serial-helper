@@ -7,6 +7,7 @@ mod state;
 mod tools;
 
 use state::AppState;
+use tauri::Manager;
 
 pub fn run() {
     env_logger::init();
@@ -16,6 +17,20 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
+        .setup(|app| {
+            // The window starts hidden and the page shows it after its first
+            // paint. If the page fails to load, show it anyway.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(win) = handle.get_webview_window("main") {
+                    if !win.is_visible().unwrap_or(true) {
+                        let _ = win.show();
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::serial_cmd::list_ports,
             commands::serial_cmd::open_port,
