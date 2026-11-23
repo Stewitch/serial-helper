@@ -23,6 +23,12 @@ interface FlashStoreState {
   flashReadSize: string;
   avrProgrammer: string;
   avrChip: string;
+  stcChip: string;
+  stcPowerPin: string;
+  stcOffLevel: string;
+  stcOffMs: number;
+  stcProtocol: string;
+  stcBaud: number;
 }
 
 interface FlashStore extends FlashStoreState {
@@ -39,6 +45,7 @@ interface FlashStore extends FlashStoreState {
   setFlashReadSize: (value: string) => void;
   setAvrProgrammer: (value: string) => void;
   setAvrChip: (value: string) => void;
+  setStc: (patch: Partial<Pick<FlashStoreState, "stcChip" | "stcPowerPin" | "stcOffLevel" | "stcOffMs" | "stcProtocol" | "stcBaud">>) => void;
   clearFirmware: () => void;
   persist: () => void;
 }
@@ -70,6 +77,12 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
   flashReadSize: saved.flashReadSize || "0x20000",
   avrProgrammer: saved.avrProgrammer || "arduino",
   avrChip: saved.avrChip || "m328p",
+  stcChip: saved.stcChip || "STC89C52RC",
+  stcPowerPin: saved.stcPowerPin || "dtr",
+  stcOffLevel: saved.stcOffLevel || "low",
+  stcOffMs: saved.stcOffMs ?? 500,
+  stcProtocol: saved.stcProtocol || "auto",
+  stcBaud: saved.stcBaud ?? 115200,
 
   setFlashModule: (flashModule) => {
     set({ flashModule });
@@ -123,6 +136,10 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
     set({ avrChip });
     get().persist();
   },
+  setStc: (patch) => {
+    set(patch);
+    get().persist();
+  },
   clearFirmware: () => {
     set({ firmwarePath: "", firmware: null });
     get().persist();
@@ -144,6 +161,12 @@ export const useFlashStore = create<FlashStore>((set, get) => ({
       flashReadSize: state.flashReadSize,
       avrProgrammer: state.avrProgrammer,
       avrChip: state.avrChip,
+      stcChip: state.stcChip,
+      stcPowerPin: state.stcPowerPin,
+      stcOffLevel: state.stcOffLevel,
+      stcOffMs: state.stcOffMs,
+      stcProtocol: state.stcProtocol,
+      stcBaud: state.stcBaud,
     };
     localStorage.setItem("serialhelper-flash", JSON.stringify(toSave));
   },

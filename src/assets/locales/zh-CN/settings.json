@@ -59,5 +59,11 @@
   "moduleSetup": "安装说明",
   "moduleSetupSteps": "安装步骤",
   "monitorFontSize": "输出字号",
-  "timestampFormat": "时间戳格式"
+  "timestampFormat": "时间戳格式",
+  "moduleInstallTools": "安装 stcgal",
+  "moduleInstalling": "正在安装…",
+  "moduleInstallFailed": "安装失败：{{error}}",
+  "moduleInstallLog": "安装输出",
+  "moduleChipList": "支持的芯片",
+  "moduleFormatList": "文件格式"
 }

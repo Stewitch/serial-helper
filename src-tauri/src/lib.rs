@@ -32,14 +32,12 @@ pub fn run() {
             commands::flash_cmd::read_chip_info,
             commands::flash_cmd::erase_chip,
             commands::flash_cmd::read_flash,
-            commands::flash_cmd::start_flash,
             commands::flash_cmd::cancel_flash,
-            commands::avr_cmd::flash_avr_start,
-            commands::avr_cmd::flash_avr_cancel,
-            commands::avr_cmd::list_avr_chips,
             commands::module_cmd::list_modules,
             commands::module_cmd::check_module_env,
             commands::module_cmd::start_module_scan,
+            commands::module_cmd::install_module_tools,
+            commands::module_cmd::module_flash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running SerialHelper");

@@ -857,7 +857,6 @@ pub async fn read_flash(
 }
 
 /// Full flash flow: parse → connect → detect → erase → write → [verify] → [run]
-#[tauri::command]
 pub async fn start_flash(
     app: AppHandle,
     state: State<'_, AppState>,

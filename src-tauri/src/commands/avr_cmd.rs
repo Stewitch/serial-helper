@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 use crate::flash::arduino_avr::{AvrdudeConfig, AvrdudeFlasher};
-use crate::flash::avr_chips::{self, AvrChipInfo};
+use crate::flash::avr_chips;
 use crate::flash::orchestrator::{FlashProgress, FirmwareFormat};
 use crate::firmware::{self, hex, bin};
 use crate::state::AppState;
@@ -19,29 +19,6 @@ struct FlashProgressEvent {
     stage: String,
     percent: u8,
     message: String,
-}
-
-#[derive(Clone, Serialize)]
-pub struct AvrChipResult {
-    pub name: String,
-    pub avrdude_part: String,
-    pub signature: String,
-    pub flash_kb: u32,
-    pub ram_kb: u32,
-    pub eeprom_kb: u32,
-}
-
-impl From<&AvrChipInfo> for AvrChipResult {
-    fn from(c: &AvrChipInfo) -> Self {
-        Self {
-            name: c.name.clone(),
-            avrdude_part: c.avrdude_part.clone(),
-            signature: format!("{:02X} {:02X} {:02X}", c.signature[0], c.signature[1], c.signature[2]),
-            flash_kb: c.flash_kb,
-            ram_kb: c.ram_kb,
-            eeprom_kb: c.eeprom_kb,
-        }
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -86,7 +63,6 @@ fn parse_avr_firmware(path: &str, base_address: Option<u32>) -> AppResult<firmwa
     }
 }
 
-#[tauri::command]
 pub async fn flash_avr_start(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -198,18 +174,4 @@ pub async fn flash_avr_start(
         }
         Err(e) => Err(e),
     }
-}
-
-#[tauri::command]
-pub fn flash_avr_cancel(state: State<AppState>) -> Result<(), String> {
-    state.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_avr_chips() -> Result<Vec<AvrChipResult>, String> {
-    Ok(avr_chips::avr_chip_database()
-        .iter()
-        .map(AvrChipResult::from)
-        .collect())
 }

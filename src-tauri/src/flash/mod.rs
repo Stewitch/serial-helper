@@ -5,3 +5,4 @@ pub mod module_trait;
 pub mod registry;
 pub mod stm32_isp;
 pub mod arduino_avr;
+pub mod stc89;

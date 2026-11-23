@@ -64,16 +64,21 @@ export interface Step {
   endedAt?: number;
 }
 
-export function buildSteps(avr: boolean, verify: boolean, runAfter: boolean): Step[] {
-  const ids: StepId[] = avr
-    ? ["connect", "write", ...(verify ? (["verify"] as const) : [])]
-    : ["connect", "detect", "erase", "write", ...(verify ? (["verify"] as const) : []), ...(runAfter ? (["run"] as const) : [])];
+export type FlowKind = "stm32" | "avr" | "stc89";
+
+export function buildSteps(kind: FlowKind, verify: boolean, runAfter: boolean): Step[] {
+  const ids: StepId[] =
+    kind === "avr"
+      ? ["connect", "write", ...(verify ? (["verify"] as const) : [])]
+      : kind === "stc89"
+        ? ["connect", "detect", "erase", "write", "run"]
+        : ["connect", "detect", "erase", "write", ...(verify ? (["verify"] as const) : []), ...(runAfter ? (["run"] as const) : [])];
   return ids.map((id) => ({ id, status: "pending" }));
 }
 
 /** Maps a backend progress stage to the step it belongs to. */
-export function stepForStage(stage: string, avr: boolean): StepId | null {
-  if (avr) {
+export function stepForStage(stage: string, kind: FlowKind): StepId | null {
+  if (kind === "avr") {
     switch (stage) {
       case "parsing":
       case "detecting":

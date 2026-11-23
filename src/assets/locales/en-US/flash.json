@@ -142,5 +142,21 @@
   "showLog_other": "Show detailed log ({{count}} lines)",
   "hideLog": "Hide detailed log",
   "monitorResumed": "Flashing done, {{port}} reopened",
-  "monitorResumeFailed": "Could not reopen the port: {{error}}"
+  "monitorResumeFailed": "Could not reopen the port: {{error}}",
+  "moduleStc89": "STC89/90 (stcgal)",
+  "moduleToolsMissing": "{{tools}} missing. Install before flashing.",
+  "moduleToolsOpen": "Install",
+  "stcChipHint": "The real model is read while flashing",
+  "groupPower": "Power cycle",
+  "stcPowerPin": "Power off by",
+  "stcPinOff": "{{pin}} {{level}} = off",
+  "stcPowerHint": "On start, {{pin}} goes {{level}} for {{ms}} ms, then power returns",
+  "stcOffTime": "Off time",
+  "stcProtocol": "Bootloader",
+  "stcProtocolAuto": "Detect",
+  "stcProtocolOld": "Old (stc89)",
+  "stcProtocolNew": "7.x (stc89a)",
+  "stcBaud": "Transfer baud",
+  "stepConnectStc": "Power cycle and handshake",
+  "readyHintStc": "Pick the port and click Start. SerialHelper cuts and restores the board's power itself."
 }

@@ -1,194 +1,201 @@
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use std::path::Path;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
-use crate::flash::orchestrator::{EnvStatus, HelpLink};
-use crate::tools::checker::ToolChecker;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, State};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ModuleInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub builtin: bool,
-    pub installed: bool,
-    pub chip_count: u32,
-    pub format_count: u32,
-    pub status: String,
-    pub required_tools: Vec<String>,
-}
+use crate::commands::{avr_cmd, flash_cmd};
+use crate::error::AppError;
+use crate::firmware::{bin, hex};
+use crate::flash::module_trait::{ModuleAvailability, ModuleDescriptor};
+use crate::flash::orchestrator::EnvStatus;
+use crate::flash::registry;
+use crate::flash::stc89::{self, Stc89Options};
+use crate::state::AppState;
+use crate::tools::runner::Stream;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModuleEnvUpdate {
-    pub module: ModuleInfo,
+    pub module: ModuleDescriptor,
     pub env: EnvStatus,
 }
 
-fn module_catalog() -> Vec<ModuleInfo> {
-    let avrdude_ready = ToolChecker::is_installed("avrdude");
-
-    vec![
-        ModuleInfo {
-            id: "stm32-isp".into(),
-            name: "STM32 Serial ISP".into(),
-            description: "Flash STM32 MCUs over the built-in serial bootloader.".into(),
-            builtin: true,
-            installed: true,
-            chip_count: 48,
-            format_count: 2,
-            status: "ready".into(),
-            required_tools: vec![],
-        },
-        ModuleInfo {
-            id: "arduino-avr".into(),
-            name: "Arduino AVR".into(),
-            description: "Flash Arduino AVR boards through avrdude.".into(),
-            builtin: true,
-            installed: avrdude_ready,
-            chip_count: 12,
-            format_count: 1,
-            status: if avrdude_ready { "ready" } else { "missing-tools" }.into(),
-            required_tools: vec!["avrdude".into()],
-        },
-        ModuleInfo {
-            id: "esp32-esptool".into(),
-            name: "ESP32 (esptool)".into(),
-            description: "Planned UART flashing support for ESP32-family chips.".into(),
-            builtin: false,
-            installed: false,
-            chip_count: 0,
-            format_count: 0,
-            status: "planned".into(),
-            required_tools: vec!["python".into(), "esptool".into()],
-        },
-    ]
+#[tauri::command]
+pub fn list_modules() -> Vec<ModuleDescriptor> {
+    registry::modules().iter().map(|m| m.descriptor()).collect()
 }
 
 #[tauri::command]
-pub fn list_modules() -> Result<Vec<ModuleInfo>, String> {
-    Ok(module_catalog())
+pub async fn check_module_env(module_id: String) -> Result<EnvStatus, AppError> {
+    let module = registry::find(&module_id).ok_or_else(|| AppError::Generic(format!("Unknown module '{}'", module_id)))?;
+    tokio::task::spawn_blocking(move || module.check_environment())
+        .await
+        .map_err(|e| AppError::Generic(format!("Environment check panicked: {}", e)))
 }
 
+/// Checks every module in the background and emits `module-env-update` for each.
 #[tauri::command]
-pub fn check_module_env(module_id: String) -> Result<EnvStatus, String> {
-    match module_id.as_str() {
-        "stm32-isp" => Ok(EnvStatus {
-            ready: true,
-            missing_tools: vec![],
-            messages: vec![
-                "Uses the built-in STM32 serial ISP implementation.".into(),
-                "No external tool is required.".into(),
-            ],
-            version: Some("Built-in".into()),
-            install_hint: None,
-            install_steps: vec![],
-            references: vec![],
-        }),
-        "arduino-avr" => {
-            let ready = ToolChecker::is_installed("avrdude");
-            let raw_version = ToolChecker::get_version("avrdude", "--version");
-            let version = raw_version
-                .as_ref()
-                .and_then(|output| {
-                    output
-                        .lines()
-                        .next()
-                        .map(|line| line.trim().to_string())
-                });
-            let messages = if let Some(ref v) = version {
-                vec![format!("avrdude detected: {}", v)]
-            } else if ready {
-                vec!["avrdude detected.".into()]
-            } else {
-                vec!["avrdude was not found in PATH.".into()]
-            };
-
-            Ok(EnvStatus {
-                ready,
-                missing_tools: if ready { vec![] } else { vec!["avrdude".into()] },
-                messages,
-                version,
-                install_hint: if ready {
-                    None
-                } else {
-                    Some("Install avrdude and make sure the executable is available in PATH.".into())
-                },
-                install_steps: if ready {
-                    vec![]
-                } else {
-                    vec![
-                        "Download a Windows build of avrdude or install it with a package manager you already use.".into(),
-                        "Make sure the folder containing avrdude.exe is added to PATH.".into(),
-                        "Open a new terminal and run `avrdude -?` to confirm it is available.".into(),
-                    ]
-                },
-                references: vec![HelpLink {
-                    label: "AVRDUDE documentation".into(),
-                    url: "https://avrdudes.github.io/avrdude/8.0/avrdude_toc.html".into(),
-                }],
-            })
+pub fn start_module_scan(app: AppHandle) {
+    std::thread::spawn(move || {
+        for module in registry::modules() {
+            let env = module.check_environment();
+            let _ = app.emit("module-env-update", ModuleEnvUpdate { module: module.descriptor(), env });
         }
-        "esp32-esptool" => {
-            let python_ready = ToolChecker::is_installed("python");
-            let esptool_ready = ToolChecker::is_installed("esptool");
-            let mut missing = Vec::new();
-            if !python_ready {
-                missing.push("python".into());
-            }
-            if !esptool_ready {
-                missing.push("esptool".into());
-            }
+        let _ = app.emit("module-scan-done", ());
+    });
+}
 
-            Ok(EnvStatus {
-                ready: missing.is_empty(),
-                missing_tools: missing,
-                messages: vec![
-                    "ESP32 support is planned and not wired into flashing yet.".into(),
-                    "This check only validates whether Python and esptool are available.".into(),
-                ],
-                version: ToolChecker::get_version("esptool", "version")
-                    .and_then(|output| output.lines().next().map(|line| line.to_string())),
-                install_hint: Some("Install Python 3 and `esptool`, then make both available in PATH.".into()),
-                install_steps: if python_ready && esptool_ready {
-                    vec![]
-                } else {
-                    vec![
-                        "Install Python 3 for Windows and enable the option to add Python to PATH.".into(),
-                        "Open a new terminal and run `python -m pip install esptool`.".into(),
-                        "Verify the installation with `esptool version`.".into(),
-                    ]
-                },
-                references: vec![
-                    HelpLink {
-                        label: "esptool installation guide".into(),
-                        url: "https://docs.espressif.com/projects/esptool/en/latest/installation.html".into(),
-                    },
-                    HelpLink {
-                        label: "Python for Windows".into(),
-                        url: "https://www.python.org/downloads/windows/".into(),
-                    },
-                ],
-            })
+#[derive(Clone, Serialize)]
+struct InstallLine {
+    module: String,
+    line: String,
+}
+
+/// Installs a module's missing tools where the app can do it itself (pip packages).
+#[tauri::command]
+pub async fn install_module_tools(app: AppHandle, module_id: String) -> Result<EnvStatus, AppError> {
+    if module_id != registry::STC89 {
+        return Err(AppError::Generic(format!("Module '{}' cannot install its tools automatically", module_id)));
+    }
+    let app2 = app.clone();
+    let id = module_id.clone();
+    tokio::task::spawn_blocking(move || {
+        stc89::install_stcgal(|line| {
+            let _ = app2.emit("module-install-output", InstallLine { module: id.clone(), line: line.to_string() });
+        })
+    })
+    .await
+    .map_err(|e| AppError::Generic(format!("Install task panicked: {}", e)))??;
+    check_module_env(module_id).await
+}
+
+/* ---------------- Flashing ---------------- */
+
+#[derive(Clone, Serialize)]
+struct ProgressEvent {
+    stage: String,
+    percent: u8,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    length: Option<u32>,
+}
+
+fn emit(app: &AppHandle, stage: &str, percent: u8, message: &str) {
+    let _ = app.emit(
+        "flash-progress",
+        ProgressEvent { stage: stage.into(), percent, message: message.into(), address: None, length: None },
+    );
+}
+
+/// Module-specific options, tagged by module id.
+#[derive(Deserialize)]
+#[serde(tag = "module", rename_all = "kebab-case")]
+pub enum ModuleFlashOptions {
+    #[serde(rename = "stm32-isp", rename_all = "camelCase")]
+    Stm32 { baud_rate: u32, options: flash_cmd::FlashOptions },
+    #[serde(rename = "arduino-avr")]
+    Avr { options: avr_cmd::AvrFlashOptions },
+    #[serde(rename = "stc89-stcgal")]
+    Stc89 { options: Stc89Options },
+}
+
+/// One entry point for every module. Progress goes out as `flash-progress` events;
+/// `cancel_flash` stops any of them.
+#[tauri::command]
+pub async fn module_flash(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    firmware_path: String,
+    port_name: String,
+    request: ModuleFlashOptions,
+) -> Result<(), AppError> {
+    match request {
+        ModuleFlashOptions::Stm32 { baud_rate, options } => {
+            flash_cmd::start_flash(app, state, firmware_path, port_name, baud_rate, options).await
         }
-        _ => Err(format!("Unknown module '{}'", module_id)),
+        ModuleFlashOptions::Avr { options } => avr_cmd::flash_avr_start(app, state, firmware_path, port_name, options).await,
+        ModuleFlashOptions::Stc89 { options } => flash_stc89(app, state, firmware_path, port_name, options).await,
     }
 }
 
-#[tauri::command]
-pub fn start_module_scan(app: AppHandle) -> Result<(), String> {
-    let modules = module_catalog();
-    std::thread::spawn(move || {
-        for module in modules {
-            if let Ok(env) = check_module_env(module.id.clone()) {
-                let _ = app.emit(
-                    "module-env-update",
-                    ModuleEnvUpdate {
-                        module,
-                        env,
+async fn flash_stc89(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    firmware_path: String,
+    port_name: String,
+    options: Stc89Options,
+) -> Result<(), AppError> {
+    let start = Instant::now();
+    state.cancel_flag.store(false, Ordering::SeqCst);
+    let cancel = state.cancel_flag.clone();
+
+    let module = registry::find(registry::STC89).expect("stc89 module registered");
+    if module.descriptor().availability != ModuleAvailability::Available {
+        return Err(AppError::Generic("STC89 module is not available".into()));
+    }
+    let chip = stc89::chips()
+        .into_iter()
+        .find(|c| c.id == options.chip)
+        .ok_or_else(|| AppError::UnsupportedChip(options.chip.clone()))?;
+
+    emit(&app, "parsing", 0, "Parsing firmware...");
+    let path = Path::new(&firmware_path);
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("firmware").to_string();
+    let data = std::fs::read(path).map_err(|e| AppError::FirmwareParseError(format!("Cannot read file: {}", e)))?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let firmware = match ext.as_str() {
+        "hex" | "ihx" => hex::parse_hex(&filename, &data)?,
+        "bin" => bin::parse_bin(&filename, &data, 0)?,
+        _ => return Err(AppError::FirmwareParseError(format!("STC89 flashing supports .hex and .bin, not .{}", ext))),
+    };
+    let image = stc89::flat_image(&firmware, chip.flash_kb as usize * 1024)?;
+    emit(&app, "parsing", 2, &format!("Firmware: {} bytes for {}", image.len(), chip.name));
+
+    // The port must be free: the wrapper opens it itself.
+    {
+        let mgr = state.serial_manager.read();
+        if mgr.is_open() {
+            mgr.close()?;
+        }
+    }
+
+    let app_ev = app.clone();
+    let app_log = app.clone();
+    let port = port_name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        stc89::flash(
+            &port,
+            &image,
+            &options,
+            cancel,
+            |ev| {
+                if ev.stage == "error" || ev.stage == "complete" {
+                    return; // reported through the command result
+                }
+                let _ = app_ev.emit(
+                    "flash-progress",
+                    ProgressEvent {
+                        stage: ev.stage.clone(),
+                        percent: ev.percent.unwrap_or(0),
+                        message: ev.message.clone(),
+                        address: ev.address,
+                        length: ev.length,
                     },
                 );
-            }
-        }
-    });
+            },
+            |stream, line| {
+                let stage = if stream == Stream::Stderr { "log-warn" } else { "log" };
+                emit(&app_log, stage, 0, line);
+            },
+        )
+    })
+    .await
+    .map_err(|e| AppError::Generic(format!("Flash task panicked: {}", e)))?;
 
+    result?;
+    emit(&app, "complete", 100, &format!("Done in {:.1}s", start.elapsed().as_secs_f64()));
     Ok(())
 }

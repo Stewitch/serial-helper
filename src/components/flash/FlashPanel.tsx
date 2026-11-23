@@ -9,11 +9,12 @@ import { useSerialStore } from "@/stores/serialStore";
 import { useAppStore } from "@/stores/appStore";
 import { useFlashStore, type FirmwareInfo } from "@/stores/flashStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useModulesStore, type EnvStatus, type ModuleChip } from "@/stores/modulesStore";
 import { monitorBuffer } from "@/lib/monitorBuffer";
 import { Button, FieldGroup, FieldRow, Select, Switch } from "@/components/ui";
 import type { SerialConfig } from "@/types/serial";
 import { PageMap } from "./PageMap";
-import { AVR_CHIPS, AVR_PROGRAMMERS } from "./avrChips";
+import { AVR_PROGRAMMERS } from "./avrChips";
 import {
   advanceSteps,
   buildSteps,
@@ -28,6 +29,7 @@ import {
   parseHexInput,
   stepForStage,
   type FlashGeometry,
+  type FlowKind,
   type Step,
 } from "./flashModel";
 
@@ -99,8 +101,37 @@ export function FlashPanel() {
   const setAutoResumeMonitor = useSettingsStore((s) => s.setAutoResumeMonitor);
   const autoNavigateMonitorAfterFlash = useSettingsStore((s) => s.autoNavigateMonitorAfterFlash);
 
-  const isAvr = fs.flashModule === "arduino-avr";
+  const modules = useModulesStore((s) => s.modules);
+  const ensureModules = useModulesStore((s) => s.ensureModules);
+  const moduleEnv = useModulesStore((s) => s.envByModule[fs.flashModule]);
+  const setModuleEnv = useModulesStore((s) => s.setEnv);
+  const module = modules.find((m) => m.id === fs.flashModule);
+  const kind: FlowKind = fs.flashModule === "arduino-avr" ? "avr" : fs.flashModule === "stc89-stcgal" ? "stc89" : "stm32";
+  const isAvr = kind === "avr";
+  const isStc = kind === "stc89";
+  const manualChip = kind !== "stm32";
   const firmware = fs.firmware;
+
+  useEffect(() => {
+    void ensureModules().catch(() => undefined);
+  }, [ensureModules]);
+
+  // Check the selected module's tools so a missing tool shows before flashing.
+  useEffect(() => {
+    if (!isTauri() || !module || module.required_tools.length === 0) return;
+    let cancelled = false;
+    void invoke<EnvStatus>("check_module_env", { moduleId: module.id })
+      .then((env) => {
+        if (!cancelled) setModuleEnv(module.id, env);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [module, setModuleEnv]);
+
+  const selectedChipId = isAvr ? fs.avrChip : isStc ? fs.stcChip : null;
+  const manualChipInfo: ModuleChip | undefined = selectedChipId ? module?.chips.find((c) => c.id === selectedChipId) : undefined;
 
   /* ---------- Local state ---------- */
   const [chipInfo, setChipInfo] = useState<ChipInfoResult | null>(null);
@@ -143,9 +174,8 @@ export function FlashPanel() {
 
   /* ---------- Geometry ---------- */
   const geometry: FlashGeometry | null = useMemo(() => {
-    if (isAvr) {
-      const chip = AVR_CHIPS.find((c) => c.value === fs.avrChip);
-      return chip ? makeGeometry(0, chip.flashKb * 1024, chip.pageSize) : null;
+    if (manualChip) {
+      return manualChipInfo ? makeGeometry(manualChipInfo.flash_start, manualChipInfo.flash_kb * 1024, manualChipInfo.page_size) : null;
     }
     const m = chipInfo?.chip_match;
     if (m) return makeGeometry(m.flash_start, m.flash_kb * 1024, m.page_size);
@@ -157,7 +187,7 @@ export function FlashPanel() {
       return makeGeometry(start, Math.ceil((hi - start) / 1024) * 1024, 1024);
     }
     return null;
-  }, [isAvr, fs.avrChip, chipInfo, firmware]);
+  }, [manualChip, manualChipInfo, chipInfo, firmware]);
 
   const firmwareCells = useMemo(
     () => (geometry && firmware ? firmwareBytesPerCell(geometry, firmware.segments) : null),
@@ -254,7 +284,7 @@ export function FlashPanel() {
 
   const resumeMonitor = useCallback(
     async (config: SerialConfig | null) => {
-      if (!config || !autoResumeMonitor || !fs.runAfter) {
+      if (!config || !autoResumeMonitor || !(fs.runAfter || isStc)) {
         setState("IDLE");
         return;
       }
@@ -271,7 +301,7 @@ export function FlashPanel() {
         setState("IDLE");
       }
     },
-    [autoResumeMonitor, fs.runAfter, autoNavigateMonitorAfterFlash, addLog, setConnected, setActivePage, setState, t]
+    [autoResumeMonitor, fs.runAfter, isStc, autoNavigateMonitorAfterFlash, addLog, setConnected, setActivePage, setState, t]
   );
 
   /* ---------- Running an operation ---------- */
@@ -281,9 +311,9 @@ export function FlashPanel() {
   firmwareCellsRef.current = firmwareCells;
 
   const run = useCallback(
-    async (kind: Operation, task: () => Promise<void>, opSteps: Step[]) => {
+    async (opKind: Operation, task: () => Promise<void>, opSteps: Step[]) => {
       const startedAt = Date.now();
-      setOp(kind);
+      setOp(opKind);
       setOutcome(null);
       setLog([]);
       logId.current = 0;
@@ -296,10 +326,15 @@ export function FlashPanel() {
       const unlistenChip = await listen<ChipInfoResult>("flash-chip", (e) => setChipInfo(e.payload));
       const unlisten = await listen<FlashProgress>("flash-progress", (e) => {
         const p = e.payload;
+        // Raw tool output goes to the log only.
+        if (p.stage === "log" || p.stage === "log-warn") {
+          addLog(p.message, p.stage === "log-warn" ? "warn" : "info");
+          return;
+        }
         setProgress(p);
         if (p.message) addLog(p.message, "info", replaceKeyFor(p.stage));
 
-        const stepId = stepForStage(p.stage, isAvr);
+        const stepId = stepForStage(p.stage, kind);
         if (stepId) setSteps((prev) => advanceSteps(prev, stepId, Date.now()));
 
         const geo = geometryRef.current;
@@ -338,7 +373,7 @@ export function FlashPanel() {
         setSteps((prev) => finishSteps(prev, Date.now()));
         setActiveCell(-1);
         setOutcome({ kind: "success", seconds });
-        if (kind === "flash") {
+        if (opKind === "flash") {
           await resumeMonitor(resumeConfig);
         } else {
           setState("IDLE");
@@ -358,7 +393,7 @@ export function FlashPanel() {
         if (useAppStore.getState().appState === "FLASHING") setState("IDLE");
       }
     },
-    [addLog, isAvr, releasePort, resumeMonitor, setState]
+    [addLog, isAvr, kind, releasePort, resumeMonitor, setState]
   );
 
   const startFlash = () => {
@@ -366,19 +401,33 @@ export function FlashPanel() {
     void run(
       "flash",
       () =>
-        isAvr
-          ? invoke("flash_avr_start", {
-              firmwarePath: fs.firmwarePath,
-              portName,
-              options: { programmer: fs.avrProgrammer, chip: fs.avrChip, verify: fs.verify, runAfter: fs.runAfter },
-            })
-          : invoke("start_flash", {
-              firmwarePath: fs.firmwarePath,
-              portName,
-              baudRate,
-              options: { verify: fs.verify, runAfter: fs.runAfter, autoReset: fs.dtrRtsEnabled, dtrRts: connectOptions.dtrRts },
-            }),
-      buildSteps(isAvr, fs.verify, fs.runAfter)
+        invoke("module_flash", {
+          firmwarePath: fs.firmwarePath,
+          portName,
+          request: isAvr
+            ? {
+                module: "arduino-avr",
+                options: { programmer: fs.avrProgrammer, chip: fs.avrChip, verify: fs.verify, runAfter: fs.runAfter },
+              }
+            : isStc
+              ? {
+                  module: "stc89-stcgal",
+                  options: {
+                    chip: fs.stcChip,
+                    powerPin: fs.stcPowerPin,
+                    offLevel: fs.stcOffLevel,
+                    offMs: fs.stcOffMs,
+                    protocol: fs.stcProtocol,
+                    transferBaud: fs.stcBaud,
+                  },
+                }
+              : {
+                  module: "stm32-isp",
+                  baudRate,
+                  options: { verify: fs.verify, runAfter: fs.runAfter, autoReset: fs.dtrRtsEnabled, dtrRts: connectOptions.dtrRts },
+                },
+        }),
+      buildSteps(kind, fs.verify, fs.runAfter)
     );
   };
 
@@ -448,7 +497,7 @@ export function FlashPanel() {
 
   const cancel = async () => {
     try {
-      await invoke(isAvr ? "flash_avr_cancel" : "cancel_flash");
+      await invoke("cancel_flash");
       addLog(t("cancelling"), "warn");
     } catch (e) {
       addLog(t("cancelFailed", { error: extractError(e) }), "warn");
@@ -465,9 +514,19 @@ export function FlashPanel() {
     return Math.ceil(remaining / (writeRate.bytes / elapsed));
   })();
 
-  const canFlash = Boolean(fs.firmwarePath && firmware && portName && !busy);
+  const toolsMissing = Boolean(moduleEnv && !moduleEnv.ready && module && module.required_tools.length > 0);
+  const canFlash = Boolean(fs.firmwarePath && firmware && portName && !busy && (!manualChip || manualChipInfo));
   const chip = chipInfo?.chip_match;
-  const avrChip = AVR_CHIPS.find((c) => c.value === fs.avrChip);
+  const moduleLabels: Record<string, string> = {
+    "stm32-isp": t("moduleStm32Isp"),
+    "arduino-avr": t("moduleArduinoAvr"),
+    "stc89-stcgal": t("moduleStc89"),
+  };
+  const moduleOptions =
+    modules.length > 0
+      ? modules.filter((m) => m.availability === "available").map((m) => ({ value: m.id, label: moduleLabels[m.id] ?? m.name }))
+      : [{ value: fs.flashModule, label: moduleLabels[fs.flashModule] ?? fs.flashModule }];
+  const chipOptions = (module?.chips ?? []).map((c) => ({ value: c.id, label: c.name, hint: `${c.flash_kb} KB` }));
 
   const pinOptions = [
     { value: "none:low", label: t("pinUnused") },
@@ -540,36 +599,43 @@ export function FlashPanel() {
                   setWritten([]);
                 }}
                 disabled={busy}
-                options={[
-                  { value: "stm32-isp", label: t("moduleStm32Isp") },
-                  { value: "arduino-avr", label: t("moduleArduinoAvr") },
-                ]}
+                options={moduleOptions}
                 className="w-[176px]"
               />
             </FieldRow>
-            {isAvr ? (
+            {toolsMissing && (
+              <div className="flex items-center gap-2 rounded border border-warn/40 bg-warn/10 px-2.5 py-1.5 text-xs text-ink-2">
+                <span className="flex-1">{t("moduleToolsMissing", { tools: moduleEnv!.missing_tools.join(", ") })}</span>
+                <Button size="sm" variant="ghost" onClick={() => setActivePage("modules")}>
+                  {t("moduleToolsOpen")}
+                </Button>
+              </div>
+            )}
+            {manualChip ? (
               <>
-                <FieldRow label={t("chip")}>
+                <FieldRow label={t("chip")} hint={isStc ? t("stcChipHint") : undefined}>
                   <Select
                     aria-label={t("chip")}
-                    value={fs.avrChip}
-                    onChange={fs.setAvrChip}
+                    value={selectedChipId ?? ""}
+                    onChange={(v) => (isAvr ? fs.setAvrChip(v) : fs.setStc({ stcChip: v }))}
                     disabled={busy}
-                    options={AVR_CHIPS.map((c) => ({ value: c.value, label: c.name, hint: `${c.flashKb} KB` }))}
+                    options={chipOptions}
                     className="w-[176px]"
                     mono
                   />
                 </FieldRow>
-                <FieldRow label={t("programmer")}>
-                  <Select
-                    aria-label={t("programmer")}
-                    value={fs.avrProgrammer}
-                    onChange={fs.setAvrProgrammer}
-                    disabled={busy}
-                    options={AVR_PROGRAMMERS}
-                    className="w-[176px]"
-                  />
-                </FieldRow>
+                {isAvr && (
+                  <FieldRow label={t("programmer")}>
+                    <Select
+                      aria-label={t("programmer")}
+                      value={fs.avrProgrammer}
+                      onChange={fs.setAvrProgrammer}
+                      disabled={busy}
+                      options={AVR_PROGRAMMERS}
+                      className="w-[176px]"
+                    />
+                  </FieldRow>
+                )}
               </>
             ) : (
               <FieldRow label={t("chip")} hint={chip ? undefined : t("chipAutoHint")}>
@@ -580,7 +646,69 @@ export function FlashPanel() {
             )}
           </FieldGroup>
 
-          {!isAvr && (
+          {isStc && (
+            <FieldGroup title={t("groupPower")}>
+              <FieldRow
+                label={t("stcPowerPin")}
+                hint={t("stcPowerHint", { pin: fs.stcPowerPin.toUpperCase(), level: t(fs.stcOffLevel === "low" ? "levelLow" : "levelHigh"), ms: fs.stcOffMs })}
+              >
+                <Select
+                  aria-label={t("stcPowerPin")}
+                  value={`${fs.stcPowerPin}:${fs.stcOffLevel}`}
+                  onChange={(v) => {
+                    const [stcPowerPin, stcOffLevel] = v.split(":");
+                    fs.setStc({ stcPowerPin, stcOffLevel });
+                  }}
+                  options={[
+                    { value: "dtr:low", label: t("stcPinOff", { pin: "DTR", level: t("levelLow") }) },
+                    { value: "dtr:high", label: t("stcPinOff", { pin: "DTR", level: t("levelHigh") }) },
+                    { value: "rts:low", label: t("stcPinOff", { pin: "RTS", level: t("levelLow") }) },
+                    { value: "rts:high", label: t("stcPinOff", { pin: "RTS", level: t("levelHigh") }) },
+                  ]}
+                  disabled={busy}
+                  className="w-[156px]"
+                />
+              </FieldRow>
+              <FieldRow label={t("stcOffTime")} indent>
+                <Select
+                  aria-label={t("stcOffTime")}
+                  value={String(fs.stcOffMs)}
+                  onChange={(v) => fs.setStc({ stcOffMs: Number(v) })}
+                  options={[200, 300, 500, 800, 1000, 1500, 2000].map((ms) => ({ value: String(ms), label: `${ms} ms` }))}
+                  disabled={busy}
+                  className="w-[156px]"
+                  mono
+                />
+              </FieldRow>
+              <FieldRow label={t("stcProtocol")} indent>
+                <Select
+                  aria-label={t("stcProtocol")}
+                  value={fs.stcProtocol}
+                  onChange={(v) => fs.setStc({ stcProtocol: v })}
+                  options={[
+                    { value: "auto", label: t("stcProtocolAuto") },
+                    { value: "stc89", label: t("stcProtocolOld") },
+                    { value: "stc89a", label: t("stcProtocolNew") },
+                  ]}
+                  disabled={busy}
+                  className="w-[156px]"
+                />
+              </FieldRow>
+              <FieldRow label={t("stcBaud")} indent>
+                <Select
+                  aria-label={t("stcBaud")}
+                  value={String(fs.stcBaud)}
+                  onChange={(v) => fs.setStc({ stcBaud: Number(v) })}
+                  options={[9600, 19200, 38400, 57600, 115200].map((b) => ({ value: String(b), label: String(b) }))}
+                  disabled={busy}
+                  className="w-[156px]"
+                  mono
+                />
+              </FieldRow>
+            </FieldGroup>
+          )}
+
+          {kind === "stm32" && (
             <FieldGroup title={t("groupBootloader")}>
               <FieldRow label={t("autoReset")} hint={fs.dtrRtsEnabled ? undefined : t("autoResetOffHint")}>
                 <Switch aria-label={t("autoReset")} checked={fs.dtrRtsEnabled} onChange={fs.setDtrRtsEnabled} disabled={busy} />
@@ -599,18 +727,22 @@ export function FlashPanel() {
           )}
 
           <FieldGroup title={t("groupAfter")}>
-            <FieldRow label={t("verifyAfterFlash")}>
-              <Switch aria-label={t("verifyAfterFlash")} checked={fs.verify} onChange={fs.setVerify} disabled={busy} />
-            </FieldRow>
-            <FieldRow label={t("runAfter")}>
-              <Switch aria-label={t("runAfter")} checked={fs.runAfter} onChange={fs.setRunAfter} disabled={busy} />
-            </FieldRow>
-            <FieldRow label={t("autoResumeMonitor")} hint={fs.runAfter ? undefined : t("resumeNeedsRun")}>
-              <Switch aria-label={t("autoResumeMonitor")} checked={autoResumeMonitor && fs.runAfter} onChange={setAutoResumeMonitor} disabled={busy || !fs.runAfter} />
+            {!isStc && (
+              <>
+                <FieldRow label={t("verifyAfterFlash")}>
+                  <Switch aria-label={t("verifyAfterFlash")} checked={fs.verify} onChange={fs.setVerify} disabled={busy} />
+                </FieldRow>
+                <FieldRow label={t("runAfter")}>
+                  <Switch aria-label={t("runAfter")} checked={fs.runAfter} onChange={fs.setRunAfter} disabled={busy} />
+                </FieldRow>
+              </>
+            )}
+            <FieldRow label={t("autoResumeMonitor")} hint={fs.runAfter || isStc ? undefined : t("resumeNeedsRun")}>
+              <Switch aria-label={t("autoResumeMonitor")} checked={autoResumeMonitor && (fs.runAfter || isStc)} onChange={setAutoResumeMonitor} disabled={busy || !(fs.runAfter || isStc)} />
             </FieldRow>
           </FieldGroup>
 
-          {!isAvr && (
+          {kind === "stm32" && (
             <FieldGroup title={t("groupTools")}>
               <FieldRow label={t("readFlash")} hint={chip ? undefined : t("readNeedsChip")}>
                 <Button size="sm" onClick={readFlash} disabled={busy || !chip}>
@@ -652,11 +784,11 @@ export function FlashPanel() {
       <section className="flex flex-col min-w-0 min-h-0">
         <header className="px-6 pt-[18px] pb-1 flex items-baseline gap-3.5 flex-wrap">
           <h2 className="m-0 font-mono text-xl font-semibold tracking-[-0.01em]">
-            {isAvr ? avrChip?.name : chip ? chip.name : chipInfo ? chipInfo.device_id_hex : t("chipNotDetected")}
+            {manualChip ? manualChipInfo?.name : chip ? chip.name : chipInfo ? chipInfo.device_id_hex : t("chipNotDetected")}
           </h2>
           <p className="m-0 text-sm text-ink-3">
-            {isAvr && avrChip
-              ? t("chipSpecs", { flash: avrChip.flashKb, ram: avrChip.ramKb })
+            {manualChip && manualChipInfo
+              ? t("chipSpecs", { flash: manualChipInfo.flash_kb, ram: manualChipInfo.ram_kb })
               : chip
                 ? t("chipSpecsBoot", {
                     flash: chip.flash_kb,
@@ -694,12 +826,12 @@ export function FlashPanel() {
                   key={s.id}
                   step={s}
                   now={now}
-                  label={stepLabel(t, s.id, { isAvr, writtenPages, firmwarePages, resume: autoResumeMonitor && Boolean(isConnected || op) })}
+                  label={stepLabel(t, s.id, { isAvr, isStc, writtenPages, firmwarePages, resume: autoResumeMonitor && Boolean(isConnected || op) })}
                 />
               ))}
             </ol>
           ) : (
-            <p className="text-sm text-ink-3 leading-[26px]">{firmware ? t("readyHint") : t("idleHint")}</p>
+            <p className="text-sm text-ink-3 leading-[26px]">{firmware ? t(isStc ? "readyHintStc" : "readyHint") : t("idleHint")}</p>
           )}
 
           {log.length > 0 && (
@@ -751,11 +883,11 @@ type TFn = ReturnType<typeof useTranslation>["t"];
 function stepLabel(
   t: TFn,
   id: Step["id"],
-  ctx: { isAvr: boolean; writtenPages: number; firmwarePages: number; resume: boolean }
+  ctx: { isAvr: boolean; isStc: boolean; writtenPages: number; firmwarePages: number; resume: boolean }
 ): string {
   switch (id) {
     case "connect":
-      return ctx.isAvr ? t("stepConnectAvr") : t("stepConnect");
+      return ctx.isAvr ? t("stepConnectAvr") : ctx.isStc ? t("stepConnectStc") : t("stepConnect");
     case "detect":
       return t("stepDetect");
     case "erase":

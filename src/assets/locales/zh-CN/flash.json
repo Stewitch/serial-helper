@@ -140,5 +140,21 @@
   "showLog": "查看详细日志（{{count}} 条）",
   "hideLog": "收起详细日志",
   "monitorResumed": "烧录完成，已重新打开 {{port}}",
-  "monitorResumeFailed": "无法重新打开串口：{{error}}"
+  "monitorResumeFailed": "无法重新打开串口：{{error}}",
+  "moduleStc89": "STC89/90 (stcgal)",
+  "moduleToolsMissing": "缺少 {{tools}}，装好后才能烧录",
+  "moduleToolsOpen": "去安装",
+  "stcChipHint": "烧录时会读出实际型号",
+  "groupPower": "断电重启",
+  "stcPowerPin": "断电方式",
+  "stcPinOff": "{{pin}} {{level}} = 断电",
+  "stcPowerHint": "开始后 {{pin}} 置{{level}}电平 {{ms}} ms，再恢复上电",
+  "stcOffTime": "断电时长",
+  "stcProtocol": "Bootloader",
+  "stcProtocolAuto": "自动识别",
+  "stcProtocolOld": "旧版 (stc89)",
+  "stcProtocolNew": "7.x 新版 (stc89a)",
+  "stcBaud": "下载波特率",
+  "stepConnectStc": "断电重启并握手",
+  "readyHintStc": "确认串口后点“开始烧录”。软件会先给板子断电再上电，不用手动按电源开关。"
 }

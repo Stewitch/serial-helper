@@ -59,5 +59,11 @@
   "moduleSetup": "How to install",
   "moduleSetupSteps": "Install steps",
   "monitorFontSize": "Output font size",
-  "timestampFormat": "Timestamp format"
+  "timestampFormat": "Timestamp format",
+  "moduleInstallTools": "Install stcgal",
+  "moduleInstalling": "Installing…",
+  "moduleInstallFailed": "Install failed: {{error}}",
+  "moduleInstallLog": "Install output",
+  "moduleChipList": "Supported chips",
+  "moduleFormatList": "File formats"
 }

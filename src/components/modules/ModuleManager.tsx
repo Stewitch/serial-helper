@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
@@ -14,8 +14,11 @@ interface ModuleEnvUpdate {
 
 type Tone = "ok" | "warn" | "muted";
 
+/** Modules whose missing tools the app can install itself. */
+const INSTALLABLE = new Set(["stc89-stcgal"]);
+
 function moduleTone(module: ModuleInfo, env: EnvStatus | undefined): Tone {
-  if (module.status === "planned") return "muted";
+  if (module.availability === "planned") return "muted";
   if (env?.ready) return "ok";
   return env ? "warn" : "muted";
 }
@@ -29,7 +32,34 @@ export function ModuleManager() {
   const setModulesData = useModulesStore((s) => s.setModulesData);
   const updateModuleEnv = useModulesStore((s) => s.updateModuleEnv);
   const setRefreshing = useModulesStore((s) => s.setRefreshing);
+  const setEnv = useModulesStore((s) => s.setEnv);
   const [selected, setSelected] = useState<ModuleInfo | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [installLog, setInstallLog] = useState<string[]>([]);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const installLogRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    installLogRef.current?.scrollTo({ top: installLogRef.current.scrollHeight });
+  }, [installLog]);
+
+  const installTools = async (module: ModuleInfo) => {
+    setInstalling(module.id);
+    setInstallLog([]);
+    setInstallError(null);
+    const unlisten = await listen<{ module: string; line: string }>("module-install-output", (e) => {
+      if (e.payload.module === module.id) setInstallLog((prev) => [...prev.slice(-300), e.payload.line]);
+    });
+    try {
+      const env = await invoke<EnvStatus>("install_module_tools", { moduleId: module.id });
+      setEnv(module.id, env);
+    } catch (e) {
+      setInstallError(typeof e === "string" ? e : String(e));
+    } finally {
+      unlisten();
+      setInstalling(null);
+    }
+  };
 
   const refreshModules = async () => {
     setRefreshing(true);
@@ -44,18 +74,18 @@ export function ModuleManager() {
   };
 
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
+    const unlisteners: UnlistenFn[] = [];
     void listen<ModuleEnvUpdate>("module-env-update", (event) => {
       updateModuleEnv(event.payload.module, event.payload.env);
-      setRefreshing(false);
-    }).then((fn) => (unlisten = fn));
+    }).then((fn) => unlisteners.push(fn));
+    void listen("module-scan-done", () => setRefreshing(false)).then((fn) => unlisteners.push(fn));
     if (!lastLoadedAt) void refreshModules();
-    return () => unlisten?.();
+    return () => unlisteners.forEach((fn) => fn());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const statusText = (module: ModuleInfo, env: EnvStatus | undefined) => {
-    if (module.status === "planned") return t("moduleStatusPlanned");
+    if (module.availability === "planned") return t("moduleStatusPlanned");
     if (env?.ready) return env.version ? t("moduleReadyVersion", { version: env.version }) : t("moduleStatusReady");
     if (env?.missing_tools?.length) return t("moduleMissing", { tools: env.missing_tools.join("、") });
     return refreshing ? t("moduleChecking") : t("moduleStatusUnknown");
@@ -115,7 +145,7 @@ export function ModuleManager() {
                       })}
                     >
                       {statusText(module, env)}
-                      <span className="text-ink-3">　{t("moduleCounts", { chips: module.chip_count, formats: module.format_count })}</span>
+                      <span className="text-ink-3">　{t("moduleCounts", { chips: module.chips.length, formats: module.formats.length })}</span>
                     </p>
                   </div>
                   <Button size="sm" variant={tone === "warn" ? "outline" : "ghost"} onClick={() => setSelected(module)}>
@@ -153,6 +183,37 @@ export function ModuleManager() {
                     ) : null}
                   </section>
                 ) : null}
+
+                {selectedEnv && !selectedEnv.ready && INSTALLABLE.has(selected.id) && selectedEnv.missing_tools.every((tool) => tool !== "python") && (
+                  <section className="space-y-2">
+                    <Button variant="primary" size="md" onClick={() => void installTools(selected)} disabled={installing !== null}>
+                      {installing === selected.id ? t("moduleInstalling") : t("moduleInstallTools")}
+                    </Button>
+                    {installError && <p className="m-0 text-sm text-err select-text">{t("moduleInstallFailed", { error: installError })}</p>}
+                  </section>
+                )}
+
+                {installLog.length > 0 && (
+                  <section>
+                    <h3 className="m-0 mb-2 text-xs font-semibold text-ink-3">{t("moduleInstallLog")}</h3>
+                    <pre
+                      ref={installLogRef}
+                      className="m-0 max-h-40 overflow-auto rounded border border-line bg-chrome px-3 py-2 font-mono text-xs leading-5 text-ink-2 select-text whitespace-pre-wrap"
+                    >
+                      {installLog.join("\n")}
+                    </pre>
+                  </section>
+                )}
+
+                {selected.chips.length > 0 && (
+                  <section>
+                    <h3 className="m-0 mb-2 text-xs font-semibold text-ink-3">{t("moduleChipList")}</h3>
+                    <p className="m-0 text-sm text-ink-2 font-mono leading-6">{selected.chips.map((c) => c.name).join("  ")}</p>
+                    <p className="m-0 mt-1 text-xs text-ink-3">
+                      {t("moduleFormatList")}：{selected.formats.map((f) => `.${f}`).join(" ")}
+                    </p>
+                  </section>
+                )}
 
                 {selectedEnv?.messages?.length ? (
                   <section>

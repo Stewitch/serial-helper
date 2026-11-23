@@ -7,22 +7,6 @@ pub struct HelpLink {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChipInfo {
-    pub family: String,
-    pub variant: String,
-    pub ram_kb: u32,
-    pub flash_kb: u32,
-    pub flash_start: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDependency {
-    pub name: String,
-    pub check_cmd: String,
-    pub install_guide: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FirmwareFormat {
     Hex,
     Bin,
@@ -59,13 +43,4 @@ pub enum FlashStage {
     Resetting,
     Complete,
     Error,
-}
-
-// Placeholder - will be fleshed out in Phase 2
-pub struct FlashOrchestrator;
-
-impl FlashOrchestrator {
-    pub fn new() -> Self {
-        Self
-    }
 }
