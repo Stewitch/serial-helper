@@ -2,7 +2,7 @@
   "title": "Settings",
   "general": "General",
   "serialDefaults": "Serial Defaults",
-  "moduleManagement": "Module Management",
+  "moduleManagement": "Modules",
   "theme": "Theme",
   "language": "Language",
   "appearance": "Appearance",
@@ -49,5 +49,15 @@
   "moduleEmpty": "No modules available.",
   "moduleNoInstallHint": "No installation steps are required.",
   "moduleNotes": "Notes",
-  "moduleReferences": "References"
+  "moduleReferences": "References",
+  "moduleIntro": "Each flashing method is a module. Modules that rely on an external tool need it installed first.",
+  "moduleChecking": "Checking…",
+  "moduleRecheck": "Check again",
+  "moduleReadyVersion": "Ready, version {{version}}",
+  "moduleMissing": "Missing {{tools}}",
+  "moduleCounts": "{{chips}} chips, {{formats}} file formats",
+  "moduleSetup": "How to install",
+  "moduleSetupSteps": "Install steps",
+  "monitorFontSize": "Output font size",
+  "timestampFormat": "Timestamp format"
 }

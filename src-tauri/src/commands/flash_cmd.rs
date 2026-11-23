@@ -19,6 +19,11 @@ struct FlashProgressEvent {
     stage: String,
     percent: u8,
     message: String,
+    /// Start address of the chunk just written or verified, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    length: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -68,11 +73,23 @@ pub struct ConnectOptions {
     pub dtr_rts: DtrRtsConfig,
 }
 
+fn emit_chunk(app: &AppHandle, stage: &str, percent: u8, message: &str, address: u32, length: usize) {
+    let _ = app.emit("flash-progress", FlashProgressEvent {
+        stage: stage.to_string(),
+        percent,
+        message: message.to_string(),
+        address: Some(address),
+        length: Some(length as u32),
+    });
+}
+
 fn emit_progress(app: &AppHandle, stage: &str, percent: u8, message: &str) {
     let _ = app.emit("flash-progress", FlashProgressEvent {
         stage: stage.to_string(),
         percent,
         message: message.to_string(),
+        address: None,
+        length: None,
     });
 }
 
@@ -232,6 +249,8 @@ fn connect_and_enter(
             stage: "sync".into(),
             percent: 0,
             message: format!("RX: {}", s),
+            address: None,
+            length: None,
         });
     };
 
@@ -296,6 +315,8 @@ fn reenter_bootloader(
             stage: "sync".into(),
             percent: 0,
             message: format!("RX: {}", s),
+            address: None,
+            length: None,
         });
     };
 
@@ -475,14 +496,14 @@ fn write_firmware(
         isp.write_memory_with_progress(seg.address, &seg.data, |chunk_addr, chunk_len| {
             written += chunk_len;
             let pct = 50 + ((written as f64 / total as f64) * 40.0) as u8;
-            emit_progress(app, "writing", pct.min(90), &format!(
+            emit_chunk(app, "writing", pct.min(90), &format!(
                 "Segment {}/{}: {:#010X} ({}/{} bytes)",
                 i + 1,
                 firmware.segments.len(),
                 chunk_addr,
                 written,
                 total
-            ));
+            ), chunk_addr, chunk_len);
         })?;
     }
 
@@ -935,6 +956,8 @@ pub async fn start_flash(
         ),
     );
 
+    let _ = app.emit("flash-chip", &chip_info);
+
     let chip = chip_info.chip_match.as_ref().ok_or_else(|| {
         AppError::UnsupportedChip(format!(
             "Unknown chip (device_id={}). Select a chip manually or add it to the database.",
@@ -975,12 +998,12 @@ pub async fn start_flash(
             isp.verify_memory_with_progress(seg.address, &seg.data, |chunk_addr, chunk_len| {
                 verified += chunk_len;
                 let pct = 92 + ((verified as f64 / total_verify as f64) * 6.0) as u8;
-                emit_progress(&app, "verifying", pct.min(98), &format!(
+                emit_chunk(&app, "verifying", pct.min(98), &format!(
                     "Verifying {:#010X} ({}/{} bytes)",
                     chunk_addr,
                     verified,
                     total_verify
-                ));
+                ), chunk_addr, chunk_len);
             })?;
         }
         emit_progress(&app, "verifying", 98, "Verification passed");

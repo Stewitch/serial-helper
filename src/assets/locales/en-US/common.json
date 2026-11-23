@@ -29,5 +29,8 @@
   "error": "Error",
   "warning": "Warning",
   "success": "Success",
-  "info": "Info"
+  "info": "Info",
+  "minimize": "Minimize",
+  "maximize": "Maximize",
+  "restore": "Restore"
 }

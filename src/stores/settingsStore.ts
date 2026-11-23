@@ -1,7 +1,8 @@
 import { create } from "zustand";
+import { normalizeEncoding } from "@/lib/textCodec";
 
 type ThemePreset = "system" | "light" | "dark";
-type LineEnding = "CRLF" | "LF" | "CR";
+type LineEnding = "CRLF" | "LF" | "CR" | "NONE";
 
 interface SettingsStore {
   theme: ThemePreset;
@@ -61,7 +62,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   timestampFormat: saved.timestampFormat || "HH:mm:ss.SSS",
   autoScroll: saved.autoScroll ?? true,
   lineEnding: (saved.lineEnding as LineEnding) || "CRLF",
-  encoding: saved.encoding || "UTF-8",
+  encoding: normalizeEncoding(saved.encoding),
   autoReconnect: saved.autoReconnect ?? true,
   autoResumeMonitor: saved.autoResumeMonitor ?? true,
   autoNavigateMonitorAfterFlash: saved.autoNavigateMonitorAfterFlash ?? true,

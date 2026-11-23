@@ -2,53 +2,52 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== Theme: Light (default) ===== */
+/*
+ * Palette comes from the board itself.
+ * Dark: solder mask, silkscreen ink, ENIG gold pads.
+ * Light: datasheet paper and ink, with mask green as the accent.
+ * Colors are stored as "R G B" so Tailwind opacity modifiers work.
+ */
 :root {
-  --color-surface: #faf9f6;
-  --color-surface-alt: #f2f0eb;
-  --color-surface-hover: #e8e5df;
-  --color-border: #e0dcd4;
-  --color-border-strong: #c4bfb5;
-  --color-text-primary: #1c1c1c;
-  --color-text-secondary: #5c5c5c;
-  --color-text-muted: #999999;
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-monitor-rx: #16a34a;
-  --color-monitor-tx: #2563eb;
-  --color-monitor-timestamp: #9ca3af;
-  --color-monitor-system: #ca8a04;
-  --color-flash: #d946ef;
-  --color-flash-success: #16a34a;
-  --color-flash-error: #dc2626;
-  --color-danger: #dc2626;
-  --color-danger-hover: #b91c1c;
+  --chrome: 236 238 234;
+  --base: 246 247 244;
+  --raised: 255 255 255;
+  --line: 220 224 218;
+  --line-strong: 195 202 194;
+  --ink: 24 34 31;
+  --ink-2: 74 87 82;
+  --ink-3: 120 133 127;
+  --accent: 30 107 88;
+  --accent-hover: 22 88 72;
+  --accent-ink: 255 255 255;
+  --rx: 24 34 31;
+  --tx: 29 110 134;
+  --ok: 44 138 78;
+  --warn: 166 106 0;
+  --err: 194 65 47;
+  color-scheme: light;
 }
 
-/* ===== Theme: Dark ===== */
 .dark {
-  --color-surface: #18181b;
-  --color-surface-alt: #222227;
-  --color-surface-hover: #2c2c32;
-  --color-border: #35353b;
-  --color-border-strong: #4a4a52;
-  --color-text-primary: #f4f4f5;
-  --color-text-secondary: #a1a1aa;
-  --color-text-muted: #63636b;
-  --color-accent: #60a5fa;
-  --color-accent-hover: #3b82f6;
-  --color-monitor-rx: #4ade80;
-  --color-monitor-tx: #60a5fa;
-  --color-monitor-timestamp: #71717a;
-  --color-monitor-system: #facc15;
-  --color-flash: #e879f9;
-  --color-flash-success: #4ade80;
-  --color-flash-error: #f87171;
-  --color-danger: #ef4444;
-  --color-danger-hover: #dc2626;
+  --chrome: 14 29 25;
+  --base: 18 36 31;
+  --raised: 24 48 41;
+  --line: 36 65 58;
+  --line-strong: 51 90 80;
+  --ink: 230 236 228;
+  --ink-2: 169 184 177;
+  --ink-3: 109 129 121;
+  --accent: 210 164 71;
+  --accent-hover: 224 182 96;
+  --accent-ink: 26 20 6;
+  --rx: 230 236 228;
+  --tx: 134 197 210;
+  --ok: 127 203 152;
+  --warn: 230 180 80;
+  --err: 238 123 107;
+  color-scheme: dark;
 }
 
-/* ===== Base Styles ===== */
 html, body, #root {
   height: 100%;
   margin: 0;
@@ -57,38 +56,41 @@ html, body, #root {
 }
 
 body {
-  font-family: "Inter", system-ui, -apple-system, sans-serif;
-  background-color: var(--color-surface);
-  color: var(--color-text-primary);
+  font-family: theme("fontFamily.sans");
+  font-size: theme("fontSize.sm");
+  background-color: rgb(var(--base));
+  color: rgb(var(--ink));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "tnum";
 }
 
-/* ===== Scrollbar ===== */
-::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--line-strong));
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgb(var(--ink-3)); }
+::-webkit-scrollbar-corner { background: transparent; }
 
-/* ===== Selection ===== */
-::selection { background-color: rgba(37, 99, 235, 0.2); color: var(--color-text-primary); }
+::selection { background-color: rgb(var(--accent) / 0.25); }
 
-/* ===== Focus ===== */
 *:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -1px;
-  border-radius: 2px;
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 1px;
 }
 
-/* ===== Transitions ===== */
-.theme-transition {
-  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
-/* ===== Drag region for Tauri title bar (bottom part only, clickable top) ===== */
-.drag-region {
-  -webkit-app-region: drag;
-}
-.no-drag {
-  -webkit-app-region: no-drag;
+@keyframes page-pulse {
+  to { background-color: rgb(var(--accent)); }
 }

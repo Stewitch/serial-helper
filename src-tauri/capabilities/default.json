@@ -2,11 +2,18 @@
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/main/crates/tauri-utils/schema/capability.json",
   "identifier": "default",
   "description": "Default capabilities for SerialHelper",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
     "opener:default",
-    "process:default"
+    "process:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized"
   ]
 }

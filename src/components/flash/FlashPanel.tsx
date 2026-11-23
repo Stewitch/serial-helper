@@ -1,24 +1,42 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import clsx from "clsx";
 import { useSerialStore } from "@/stores/serialStore";
 import { useAppStore } from "@/stores/appStore";
 import { useFlashStore, type FirmwareInfo } from "@/stores/flashStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { PortSelector } from "@/components/shared/PortSelector";
-import { BaudRateInput } from "@/components/shared/BaudRateInput";
-import { ThemeSelect } from "@/components/shared/ThemeSelect";
-import { Toggle } from "@/components/shared/Toggle";
-import { Zap, Upload, XCircle, CheckCircle, Loader2, Cpu, Trash2, FileDown } from "lucide-react";
-import clsx from "clsx";
+import { monitorBuffer } from "@/lib/monitorBuffer";
+import { Button, FieldGroup, FieldRow, Select, Switch } from "@/components/ui";
 import type { SerialConfig } from "@/types/serial";
+import { PageMap } from "./PageMap";
+import { AVR_CHIPS, AVR_PROGRAMMERS } from "./avrChips";
+import {
+  advanceSteps,
+  buildSteps,
+  cellOf,
+  failSteps,
+  finishSteps,
+  firmwareBytesPerCell,
+  forEachCellSpan,
+  formatSize,
+  hex32,
+  makeGeometry,
+  parseHexInput,
+  stepForStage,
+  type FlashGeometry,
+  type Step,
+} from "./flashModel";
 
 interface FlashProgress {
   stage: string;
   percent: number;
   message: string;
+  address?: number;
+  length?: number;
 }
 
 interface ChipInfoResult {
@@ -37,40 +55,16 @@ interface ChipInfoResult {
   } | null;
 }
 
-interface ConnectOptions {
-  autoReset: boolean;
-  dtrRts: {
-    rtsFunction: string;
-    rtsActiveLevel: string;
-    dtrFunction: string;
-    dtrActiveLevel: string;
-  };
+type Operation = "flash" | "detect" | "erase" | "read";
+type Outcome = { kind: "success" | "error" | "cancelled"; message?: string; seconds?: number } | null;
+interface LogEntry {
+  id: number;
+  text: string;
+  tone: "info" | "ok" | "warn" | "error";
+  key?: string;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KB`;
-}
-
-const stageLabels: Record<string, string> = {
-  parsing: "Parsing",
-  connecting: "Opening",
-  bootloader: "Bootloader",
-  detecting: "Detecting",
-  erasing: "Erasing",
-  writing: "Writing",
-  verifying: "Verifying",
-  resetting: "Starting",
-  reading: "Reading",
-  complete: "Done",
-  resuming: "Resuming",
-  sync: "Sync",
-};
-
-function stageLabel(stage: string | undefined): string {
-  if (!stage) return "Working";
-  return stageLabels[stage] ?? `${stage.charAt(0).toUpperCase()}${stage.slice(1)}`;
-}
+const FIRMWARE_EXTENSIONS = ["hex", "ihx", "bin"];
 
 function extractError(e: unknown): string {
   if (typeof e === "string") return e;
@@ -83,790 +77,775 @@ function extractError(e: unknown): string {
   return String(e);
 }
 
-function toHex(value: number): string {
-  return `0x${value.toString(16).toUpperCase()}`;
-}
-
-function parseHexInput(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const normalized = trimmed.toLowerCase().startsWith("0x") ? trimmed.slice(2) : trimmed;
-  if (!/^[0-9a-fA-F]+$/.test(normalized)) return null;
-  const parsed = parseInt(normalized, 16);
-  if (!Number.isSafeInteger(parsed)) return null;
-  return parsed;
+/** Stages whose messages update in place rather than adding a log line each time. */
+function replaceKeyFor(stage: string): string | undefined {
+  return ["reading", "writing", "verifying", "sync", "bootloader"].includes(stage) ? `progress-${stage}` : undefined;
 }
 
 export function FlashPanel() {
   const { t } = useTranslation("flash");
 
-  const [chipInfo, setChipInfo] = useState<ChipInfoResult | null>(null);
-  const [flashing, setFlashing] = useState(false);
-  const [progress, setProgress] = useState<FlashProgress | null>(null);
-  const [flashLog, setFlashLog] = useState<Array<{ id: number; text: string; replaceKey?: string }>>([]);
-  const [flashResult, setFlashResult] = useState<"success" | "error" | "cancelled" | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-
+  /* ---------- Stores ---------- */
   const portName = useSerialStore((s) => s.config.port_name);
   const baudRate = useSerialStore((s) => s.config.baud_rate);
   const serialConfig = useSerialStore((s) => s.config);
-  const setConfig = useSerialStore((s) => s.setConfig);
   const setConnected = useSerialStore((s) => s.setConnected);
   const isConnected = useSerialStore((s) => s.isConnected);
   const appState = useAppStore((s) => s.appState);
   const setState = useAppStore((s) => s.setState);
   const setActivePage = useAppStore((s) => s.setActivePage);
-  const firmware = useFlashStore((s) => s.firmware);
-  const firmwarePath = useFlashStore((s) => s.firmwarePath);
-  const setFirmwareSelection = useFlashStore((s) => s.setFirmwareSelection);
-  const flashModule = useFlashStore((s) => s.flashModule);
-  const setFlashModule = useFlashStore((s) => s.setFlashModule);
-  const optVerify = useFlashStore((s) => s.verify);
-  const setOptVerify = useFlashStore((s) => s.setVerify);
-  const optRunAfter = useFlashStore((s) => s.runAfter);
-  const setOptRunAfter = useFlashStore((s) => s.setRunAfter);
-  const dtrRtsEnabled = useFlashStore((s) => s.dtrRtsEnabled);
-  const setDtrRtsEnabled = useFlashStore((s) => s.setDtrRtsEnabled);
-  const rtsFunc = useFlashStore((s) => s.rtsFunc);
-  const setRtsFunc = useFlashStore((s) => s.setRtsFunc);
-  const rtsLevel = useFlashStore((s) => s.rtsLevel);
-  const setRtsLevel = useFlashStore((s) => s.setRtsLevel);
-  const dtrFunc = useFlashStore((s) => s.dtrFunc);
-  const setDtrFunc = useFlashStore((s) => s.setDtrFunc);
-  const dtrLevel = useFlashStore((s) => s.dtrLevel);
-  const setDtrLevel = useFlashStore((s) => s.setDtrLevel);
-  const flashReadAddress = useFlashStore((s) => s.flashReadAddress);
-  const setFlashReadAddress = useFlashStore((s) => s.setFlashReadAddress);
-  const flashReadSize = useFlashStore((s) => s.flashReadSize);
-  const setFlashReadSize = useFlashStore((s) => s.setFlashReadSize);
-  const avrProgrammer = useFlashStore((s) => s.avrProgrammer);
-  const setAvrProgrammer = useFlashStore((s) => s.setAvrProgrammer);
-  const avrChip = useFlashStore((s) => s.avrChip);
-  const setAvrChip = useFlashStore((s) => s.setAvrChip);
+  const fs = useFlashStore();
   const autoResumeMonitor = useSettingsStore((s) => s.autoResumeMonitor);
-  const autoNavigateMonitorAfterFlash = useSettingsStore((s) => s.autoNavigateMonitorAfterFlash);
   const setAutoResumeMonitor = useSettingsStore((s) => s.setAutoResumeMonitor);
+  const autoNavigateMonitorAfterFlash = useSettingsStore((s) => s.autoNavigateMonitorAfterFlash);
 
-  const unlistenRef = useRef<UnlistenFn | null>(null);
-  const logIdRef = useRef(0);
-  const lastFirmwareSignatureRef = useRef<string | null>(null);
+  const isAvr = fs.flashModule === "arduino-avr";
+  const firmware = fs.firmware;
 
-  const addLog = useCallback((msg: string, replaceKey?: string) => {
-    setFlashLog((prev) => {
-      if (replaceKey) {
-        let index = -1;
-        for (let i = prev.length - 1; i >= 0; i -= 1) {
-          if (prev[i].replaceKey === replaceKey) {
-            index = i;
-            break;
+  /* ---------- Local state ---------- */
+  const [chipInfo, setChipInfo] = useState<ChipInfoResult | null>(null);
+  const [op, setOp] = useState<Operation | null>(null);
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [progress, setProgress] = useState<FlashProgress | null>(null);
+  const [written, setWritten] = useState<number[]>([]);
+  const [activeCell, setActiveCell] = useState(-1);
+  const [outcome, setOutcome] = useState<Outcome>(null);
+  const [log, setLog] = useState<LogEntry[]>([]);
+  const [showLog, setShowLog] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [writeRate, setWriteRate] = useState<{ start: number; bytes: number } | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const logId = useRef(0);
+  const lastSignature = useRef<string | null>(null);
+  const busy = op !== null;
+
+  // Tick while busy so step durations and the ETA stay current.
+  useEffect(() => {
+    if (!busy) return;
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  const addLog = useCallback((text: string, tone: LogEntry["tone"] = "info", key?: string) => {
+    setLog((prev) => {
+      if (key) {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].key === key) {
+            const next = prev.slice();
+            next[i] = { ...next[i], text, tone };
+            return next;
           }
         }
-        if (index >= 0) {
-          const next = [...prev];
-          next[index] = { ...next[index], text: msg };
-          return next;
-        }
       }
-      return [...prev, { id: logIdRef.current++, text: msg, replaceKey }];
+      return [...prev, { id: logId.current++, text, tone, key }];
     });
   }, []);
-  const clearLog = useCallback(() => {
-    setFlashLog([]);
-    logIdRef.current = 0;
-  }, []);
 
-  const connectOptions: ConnectOptions = {
-    autoReset: dtrRtsEnabled,
-    dtrRts: {
-      rtsFunction: rtsFunc,
-      rtsActiveLevel: rtsLevel,
-      dtrFunction: dtrFunc,
-      dtrActiveLevel: dtrLevel,
+  /* ---------- Geometry ---------- */
+  const geometry: FlashGeometry | null = useMemo(() => {
+    if (isAvr) {
+      const chip = AVR_CHIPS.find((c) => c.value === fs.avrChip);
+      return chip ? makeGeometry(0, chip.flashKb * 1024, chip.pageSize) : null;
+    }
+    const m = chipInfo?.chip_match;
+    if (m) return makeGeometry(m.flash_start, m.flash_kb * 1024, m.page_size);
+    // Chip not identified yet: draw the span the firmware covers.
+    if (firmware && firmware.segments.length > 0) {
+      const lo = Math.min(...firmware.segments.map((s) => s.address));
+      const hi = Math.max(...firmware.segments.map((s) => s.address + s.size));
+      const start = Math.floor(lo / 1024) * 1024;
+      return makeGeometry(start, Math.ceil((hi - start) / 1024) * 1024, 1024);
+    }
+    return null;
+  }, [isAvr, fs.avrChip, chipInfo, firmware]);
+
+  const firmwareCells = useMemo(
+    () => (geometry && firmware ? firmwareBytesPerCell(geometry, firmware.segments) : null),
+    [geometry, firmware]
+  );
+  const firmwarePages = firmwareCells ? firmwareCells.filter((n) => n > 0).length : 0;
+  const writtenPages = firmwareCells ? firmwareCells.filter((n, i) => n > 0 && (written[i] ?? 0) >= n).length : 0;
+
+  /* ---------- Firmware ---------- */
+  const loadFirmware = useCallback(
+    async (filePath: string) => {
+      try {
+        const info = await invoke<FirmwareInfo>("parse_firmware_cached", { filePath, baseAddress: null });
+        fs.setFirmwareSelection(filePath, info);
+        lastSignature.current = `${info.checksum}:${info.size}`;
+        setOutcome(null);
+        setWritten([]);
+      } catch (e) {
+        addLog(t("firmwareLoadFailed", { error: extractError(e) }), "error");
+        setShowLog(true);
+      }
     },
+    [addLog, fs, t]
+  );
+
+  const pickFirmware = async () => {
+    const selected = await open({ multiple: false, filters: [{ name: t("firmwareFilter"), extensions: FIRMWARE_EXTENSIONS }] });
+    if (typeof selected === "string") await loadFirmware(selected);
   };
 
-  const prepareFlashPort = useCallback(async (): Promise<SerialConfig | null> => {
-    const shouldResume = isConnected || appState === "MONITORING";
-    const resumeConfig = shouldResume ? { ...serialConfig } : null;
-
-    if (shouldResume) {
-      try {
-        await invoke("close_port");
-      } catch {
-        // ignore
-      } finally {
-        setConnected(null);
-      }
-    }
-
-    return resumeConfig;
-  }, [isConnected, appState, serialConfig, setConnected]);
-
-  const resumeMonitor = useCallback(async (resumeConfig: SerialConfig | null) => {
-    if (!resumeConfig || !autoResumeMonitor || !optRunAfter) {
-      setState("IDLE");
-      return;
-    }
-
-    setState("RESUMING_MONITOR");
-    addLog(`[resuming] ${t("progress.resumingMonitor")}`);
-
-    try {
-      await invoke("open_port", { config: resumeConfig });
-      setConnected(resumeConfig.port_name);
-      addLog(`[OK] Monitor resumed on ${resumeConfig.port_name}`);
-      if (autoNavigateMonitorAfterFlash) {
-        setActivePage("monitor");
-      }
-      setState("MONITORING");
-    } catch (e) {
-      addLog(`[WARN] Failed to resume monitor: ${extractError(e)}`);
-      setState("IDLE");
-    }
-  }, [autoResumeMonitor, autoNavigateMonitorAfterFlash, optRunAfter, addLog, setConnected, setActivePage, setState, t]);
-
-  const handleFile = useCallback(async (filePath: string) => {
-    try {
-      const info = await invoke<FirmwareInfo>("parse_firmware_cached", { filePath, baseAddress: null });
-      setFirmwareSelection(filePath, info);
-      setFlashResult(null);
-      lastFirmwareSignatureRef.current = `${info.checksum}:${info.size}`;
-      addLog(`[OK] ${info.filename} - ${info.format}, ${formatSize(info.size)}, ${info.segments.length} segment(s)`);
-    } catch (e) {
-      addLog(`[ERROR] ${extractError(e)}`);
-    }
-  }, [addLog, setFirmwareSelection]);
-
+  // Native drag and drop gives real file paths.
   useEffect(() => {
-    if (!firmwarePath || flashing) return;
-
-    let cancelled = false;
-    const timer = window.setInterval(async () => {
-      try {
-        const info = await invoke<FirmwareInfo>("parse_firmware_cached", { filePath: firmwarePath, baseAddress: null });
-        if (cancelled) return;
-
-        const signature = `${info.checksum}:${info.size}`;
-        if (lastFirmwareSignatureRef.current !== signature) {
-          lastFirmwareSignatureRef.current = signature;
-          setFirmwareSelection(firmwarePath, info);
-          setFlashResult(null);
-          addLog(
-            `[INFO] Firmware refreshed: ${info.filename} - ${info.format}, ${formatSize(info.size)}, ${info.segments.length} segment(s)`,
-            "firmware-refresh"
-          );
+    if (!isTauri()) return;
+    let unlisten: UnlistenFn | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") setDragOver(true);
+        else if (p.type === "leave") setDragOver(false);
+        else if (p.type === "drop") {
+          setDragOver(false);
+          const file = p.paths.find((path) => FIRMWARE_EXTENSIONS.includes(path.split(".").pop()?.toLowerCase() ?? ""));
+          if (file && !busy) void loadFirmware(file);
         }
+      })
+      .then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  }, [busy, loadFirmware]);
+
+  // Reload when the file is rebuilt on disk.
+  useEffect(() => {
+    if (!fs.firmwarePath || busy) return;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const info = await invoke<FirmwareInfo>("parse_firmware_cached", { filePath: fs.firmwarePath, baseAddress: null });
+        if (cancelled) return;
+        const sig = `${info.checksum}:${info.size}`;
+        if (lastSignature.current !== null && lastSignature.current !== sig) {
+          fs.setFirmwareSelection(fs.firmwarePath, info);
+          setOutcome(null);
+          setWritten([]);
+          addLog(t("firmwareReloaded", { name: info.filename }), "info", "firmware-reload");
+        }
+        lastSignature.current = sig;
       } catch {
-        // Ignore transient read/parse failures while the file is being rebuilt.
+        // The file may be mid-write while the build runs.
       }
     }, 1000);
-
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      clearInterval(timer);
     };
-  }, [firmwarePath, flashing, addLog, setFirmwareSelection]);
+  }, [fs.firmwarePath, busy, addLog, fs, t]);
 
-  const progressLogKey = useCallback((stage: string, message: string): string | undefined => {
-    if (stage === "reading") return "progress-reading";
-    if (stage === "writing") return "progress-writing";
-    if (stage === "verifying") return "progress-verifying";
-    if (stage === "sync") return "progress-sync";
-    if (stage === "bootloader" && (message.includes("attempt") || message.includes("retrying") || message.includes("Sync"))) {
-      return "progress-bootloader";
-    }
-    return undefined;
-  }, []);
+  /* ---------- Port hand-off ---------- */
+  const connectOptions = {
+    autoReset: fs.dtrRtsEnabled,
+    dtrRts: { rtsFunction: fs.rtsFunc, rtsActiveLevel: fs.rtsLevel, dtrFunction: fs.dtrFunc, dtrActiveLevel: fs.dtrLevel },
+  };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      const path = (file as { path?: string }).path ?? file.name;
-      if (path) handleFile(path);
-    }
-  }, [handleFile]);
-
-  const handleFilePicker = useCallback(() => {
-    void (async () => {
-      const selected = await open({
-        multiple: false,
-        filters: [
-          { name: "Firmware", extensions: ["hex", "ihx", "bin"] },
-        ],
-      });
-      if (typeof selected === "string" && selected) {
-        await handleFile(selected);
-      }
-    })();
-  }, [handleFile]);
-
-  const handleReadChip = useCallback(async () => {
-    if (!portName) return;
-    clearLog();
-    setFlashing(true);
-    setProgress(null);
-    addLog("[INFO] Connecting to detect chip...");
-
-    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
-      setProgress(event.payload);
-      if (event.payload.message) {
-        addLog(
-          `[${event.payload.stage}] ${event.payload.message}`,
-          progressLogKey(event.payload.stage, event.payload.message)
-        );
-      }
-    });
-
+  /** Closes the monitor's port so the flasher can use it. Returns the config to reopen afterwards. */
+  const releasePort = useCallback(async (): Promise<SerialConfig | null> => {
+    const wasOpen = isConnected || appState === "MONITORING";
+    if (!wasOpen) return null;
     try {
-      await prepareFlashPort();
-      setState("FLASHING");
-      const info = await invoke<ChipInfoResult>("read_chip_info", {
-        portName,
-        baudRate,
-        options: connectOptions,
-      });
-      setChipInfo(info);
-      if (info.chip_match) {
-        setFlashReadAddress(toHex(info.chip_match.flash_start));
-        setFlashReadSize(toHex(info.chip_match.flash_kb * 1024));
+      await invoke("close_port");
+    } catch {
+      // already closed
+    }
+    setConnected(null);
+    return { ...serialConfig };
+  }, [isConnected, appState, serialConfig, setConnected]);
+
+  const resumeMonitor = useCallback(
+    async (config: SerialConfig | null) => {
+      if (!config || !autoResumeMonitor || !fs.runAfter) {
+        setState("IDLE");
+        return;
       }
-      addLog(`[OK] Device ID: ${info.device_id_hex} | Bootloader v${info.bootloader_version >> 4}.${info.bootloader_version & 0xF}`);
-      if (info.chip_match) {
-        addLog(`[OK] ${info.chip_match.name} (${info.chip_match.flash_kb}KB Flash / ${info.chip_match.ram_kb}KB RAM)`);
-      } else {
-        addLog("[WARN] Unknown chip");
-      }
-    } catch (e) {
-      addLog(`[ERROR] ${extractError(e)}`);
-    } finally {
-      setFlashing(false);
-      setState("IDLE");
-      unlisten();
-    }
-  }, [portName, baudRate, clearLog, addLog, prepareFlashPort, setState, connectOptions]);
-
-  const handleErase = useCallback(async () => {
-    if (!portName || !confirm(`${t("erase")} ALL flash?`)) return;
-    clearLog();
-    setFlashing(true);
-    setFlashResult(null);
-    setProgress(null);
-
-    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
-      setProgress(event.payload);
-      if (event.payload.message) {
-        addLog(
-          `[${event.payload.stage}] ${event.payload.message}`,
-          progressLogKey(event.payload.stage, event.payload.message)
-        );
-      }
-    });
-
-    try {
-      await prepareFlashPort();
-      setState("FLASHING");
-      await invoke("erase_chip", { portName, baudRate, options: connectOptions });
-      addLog("[OK] Flash erased");
-    } catch (e) {
-      addLog(`[ERROR] ${extractError(e)}`);
-    } finally {
-      setFlashing(false);
-      setState("IDLE");
-      unlisten();
-    }
-  }, [portName, baudRate, t, clearLog, addLog, prepareFlashPort, setState, connectOptions]);
-
-  const handleReadFlash = useCallback(async () => {
-    if (!portName || !chipInfo?.chip_match) return;
-    const startAddress = parseHexInput(flashReadAddress);
-    const size = parseHexInput(flashReadSize);
-    if (startAddress === null || size === null || size <= 0) {
-      addLog("[ERROR] Invalid flash read range");
-      return;
-    }
-    if (startAddress > 0xFFFFFFFF || size > 0xFFFFFFFF) {
-      addLog("[ERROR] Flash read range exceeds 32-bit address limits");
-      return;
-    }
-    if (startAddress % 4 !== 0) {
-      addLog("[ERROR] Flash read start address must be 4-byte aligned");
-      return;
-    }
-    const flashStart = chipInfo.chip_match.flash_start;
-    const flashEnd = flashStart + chipInfo.chip_match.flash_kb * 1024;
-    const endAddress = startAddress + size;
-    if (!Number.isSafeInteger(endAddress) || endAddress > flashEnd) {
-      addLog(`[ERROR] Flash read range exceeds chip flash (${toHex(flashStart)} - ${toHex(flashEnd)})`);
-      return;
-    }
-    if (startAddress < flashStart) {
-      addLog(`[ERROR] Flash read start address must be within chip flash (${toHex(flashStart)} - ${toHex(flashEnd)})`);
-      return;
-    }
-
-    const savePath = `${chipInfo.chip_match.name}_flash_${startAddress.toString(16).toUpperCase()}_${size.toString(16).toUpperCase()}.bin`;
-    clearLog();
-    setFlashing(true);
-    setProgress(null);
-
-    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
-      setProgress(event.payload);
-      if (event.payload.message) {
-        addLog(
-          `[${event.payload.stage}] ${event.payload.message}`,
-          progressLogKey(event.payload.stage, event.payload.message)
-        );
-      }
-    });
-
-    try {
-      await prepareFlashPort();
-      setState("FLASHING");
-      await invoke("read_flash", {
-        portName,
-        baudRate,
-        options: connectOptions,
-        startAddress,
-        size,
-        savePath,
-      });
-      addLog(`[OK] Flash saved to ${savePath}`);
-    } catch (e) {
-      addLog(`[ERROR] ${extractError(e)}`);
-    } finally {
-      setFlashing(false);
-      setState("IDLE");
-      unlisten();
-    }
-  }, [portName, baudRate, chipInfo, flashReadAddress, flashReadSize, clearLog, addLog, prepareFlashPort, setState, connectOptions]);
-
-  const handleFlash = useCallback(async () => {
-    if (!firmwarePath || !portName || !firmware) return;
-    setFlashing(true);
-    clearLog();
-    setProgress(null);
-    setFlashResult(null);
-    setState("FLASHING");
-    let resumeConfig: SerialConfig | null = null;
-
-    const unlisten = await listen<FlashProgress>("flash-progress", (event) => {
-      setProgress(event.payload);
-      if (event.payload.message) {
-        addLog(
-          `[${event.payload.stage}] ${event.payload.message}`,
-          progressLogKey(event.payload.stage, event.payload.message)
-        );
-      }
-    });
-    unlistenRef.current = unlisten;
-
-    try {
-      resumeConfig = await prepareFlashPort();
-
-      if (flashModule === "arduino-avr") {
-        await invoke("flash_avr_start", {
-          firmwarePath,
-          portName,
-          options: {
-            programmer: avrProgrammer,
-            chip: avrChip,
-            verify: optVerify,
-            runAfter: optRunAfter,
-          },
-        });
-      } else {
-        await invoke("start_flash", {
-          firmwarePath,
-          portName,
-          baudRate,
-          options: {
-            verify: optVerify,
-            runAfter: optRunAfter,
-            autoReset: dtrRtsEnabled,
-            dtrRts: connectOptions.dtrRts,
-          },
-        });
-      }
-
-      setFlashResult("success");
-      await resumeMonitor(resumeConfig);
-    } catch (e) {
-      const msg = extractError(e);
-      if (msg.includes("Flash cancelled") || msg.includes("Cancelled")) {
-        setFlashResult("cancelled");
-        addLog(`[INFO] Operation cancelled`);
-      } else {
-        setFlashResult("error");
-        addLog(`[ERROR] ${msg}`);
-        setState("FLASH_ERROR");
-      }
-    } finally {
-      setFlashing(false);
-      if (useAppStore.getState().appState === "FLASHING") {
+      setState("RESUMING_MONITOR");
+      try {
+        await invoke("open_port", { config });
+        setConnected(config.port_name);
+        monitorBuffer.resetDecoder();
+        monitorBuffer.appendLine("system", t("monitorResumed", { port: config.port_name }));
+        if (autoNavigateMonitorAfterFlash) setActivePage("monitor");
+        setState("MONITORING");
+      } catch (e) {
+        addLog(t("monitorResumeFailed", { error: extractError(e) }), "warn");
         setState("IDLE");
       }
-      unlisten();
-      unlistenRef.current = null;
-    }
-  }, [
-    firmwarePath,
-    portName,
-    baudRate,
-    firmware,
-    flashModule,
-    avrProgrammer,
-    avrChip,
-    optVerify,
-    optRunAfter,
-    dtrRtsEnabled,
-    clearLog,
-    addLog,
-    setState,
-    prepareFlashPort,
-    connectOptions,
-    resumeMonitor,
-  ]);
+    },
+    [autoResumeMonitor, fs.runAfter, autoNavigateMonitorAfterFlash, addLog, setConnected, setActivePage, setState, t]
+  );
 
-  const handleCancel = useCallback(async () => {
-    try {
-      if (flashModule === "arduino-avr") {
-        await invoke("flash_avr_cancel");
-      } else {
-        await invoke("cancel_flash");
+  /* ---------- Running an operation ---------- */
+  const geometryRef = useRef(geometry);
+  geometryRef.current = geometry;
+  const firmwareCellsRef = useRef(firmwareCells);
+  firmwareCellsRef.current = firmwareCells;
+
+  const run = useCallback(
+    async (kind: Operation, task: () => Promise<void>, opSteps: Step[]) => {
+      const startedAt = Date.now();
+      setOp(kind);
+      setOutcome(null);
+      setLog([]);
+      logId.current = 0;
+      setProgress(null);
+      setSteps(opSteps);
+      setWritten([]);
+      setActiveCell(-1);
+      setWriteRate(null);
+
+      const unlistenChip = await listen<ChipInfoResult>("flash-chip", (e) => setChipInfo(e.payload));
+      const unlisten = await listen<FlashProgress>("flash-progress", (e) => {
+        const p = e.payload;
+        setProgress(p);
+        if (p.message) addLog(p.message, "info", replaceKeyFor(p.stage));
+
+        const stepId = stepForStage(p.stage, isAvr);
+        if (stepId) setSteps((prev) => advanceSteps(prev, stepId, Date.now()));
+
+        const geo = geometryRef.current;
+        if (!geo) return;
+        if (p.address !== undefined && p.length !== undefined) {
+          setActiveCell(cellOf(geo, p.address));
+          if (p.stage === "writing") {
+            setWritten((prev) => {
+              const next = prev.length === geo.cells ? prev.slice() : new Array<number>(geo.cells).fill(0);
+              forEachCellSpan(geo, p.address!, p.length!, (cell, n) => (next[cell] += n));
+              return next;
+            });
+            setWriteRate((r) => ({ start: r?.start ?? Date.now(), bytes: (r?.bytes ?? 0) + p.length! }));
+          }
+        } else if (p.stage === "writing" && isAvr && p.percent <= 100) {
+          // avrdude only reports a percentage; fill the firmware pages in order.
+          const fw = firmwareCellsRef.current;
+          if (!fw) return;
+          const total = fw.reduce((a, b) => a + b, 0);
+          let budget = (total * p.percent) / 100;
+          const next = fw.map((n) => {
+            const take = Math.min(n, budget);
+            budget -= take;
+            return take;
+          });
+          setWritten(next);
+          setActiveCell(next.findIndex((n, i) => fw[i] > 0 && n < fw[i]));
+        }
+      });
+
+      const resumeConfig = await releasePort();
+      setState("FLASHING");
+      try {
+        await task();
+        const seconds = (Date.now() - startedAt) / 1000;
+        setSteps((prev) => finishSteps(prev, Date.now()));
+        setActiveCell(-1);
+        setOutcome({ kind: "success", seconds });
+        if (kind === "flash") {
+          await resumeMonitor(resumeConfig);
+        } else {
+          setState("IDLE");
+        }
+      } catch (e) {
+        const message = extractError(e);
+        const cancelled = /cancel/i.test(message);
+        setSteps((prev) => failSteps(prev, Date.now()));
+        setActiveCell(-1);
+        setOutcome({ kind: cancelled ? "cancelled" : "error", message });
+        addLog(message, cancelled ? "warn" : "error");
+        setState(cancelled ? "IDLE" : "FLASH_ERROR");
+      } finally {
+        unlisten();
+        unlistenChip();
+        setOp(null);
+        if (useAppStore.getState().appState === "FLASHING") setState("IDLE");
       }
-      addLog("[INFO] Cancelling...");
-    } catch (e) {
-      addLog(`[WARN] Cancel failed: ${extractError(e)}`);
-    }
-  }, [addLog, flashModule]);
+    },
+    [addLog, isAvr, releasePort, resumeMonitor, setState]
+  );
 
-  const canFlash = Boolean(firmwarePath && portName && !flashing);
-  const canHelper = Boolean(portName && !flashing);
-  const rowBtn = "flex items-center gap-1.5 px-2.5 h-7 text-[0.6875rem] rounded border transition-colors";
-  const inputClass = "h-7 px-2.5 rounded border border-border bg-surface text-[0.6875rem] text-text-secondary font-mono focus:outline-none focus:border-accent";
+  const startFlash = () => {
+    if (!fs.firmwarePath || !portName || !firmware) return;
+    void run(
+      "flash",
+      () =>
+        isAvr
+          ? invoke("flash_avr_start", {
+              firmwarePath: fs.firmwarePath,
+              portName,
+              options: { programmer: fs.avrProgrammer, chip: fs.avrChip, verify: fs.verify, runAfter: fs.runAfter },
+            })
+          : invoke("start_flash", {
+              firmwarePath: fs.firmwarePath,
+              portName,
+              baudRate,
+              options: { verify: fs.verify, runAfter: fs.runAfter, autoReset: fs.dtrRtsEnabled, dtrRts: connectOptions.dtrRts },
+            }),
+      buildSteps(isAvr, fs.verify, fs.runAfter)
+    );
+  };
+
+  const detectChip = () => {
+    if (!portName) return;
+    void run(
+      "detect",
+      async () => {
+        const info = await invoke<ChipInfoResult>("read_chip_info", { portName, baudRate, options: connectOptions });
+        setChipInfo(info);
+        if (info.chip_match) {
+          fs.setFlashReadAddress(hex32(info.chip_match.flash_start));
+          fs.setFlashReadSize(`0x${(info.chip_match.flash_kb * 1024).toString(16).toUpperCase()}`);
+        }
+      },
+      [
+        { id: "connect", status: "pending" },
+        { id: "detect", status: "pending" },
+      ]
+    );
+  };
+
+  const eraseChip = async () => {
+    if (!portName) return;
+    const name = chipInfo?.chip_match?.name ?? t("chipUnknownShort");
+    const ok = await ask(t("eraseConfirm", { chip: name }), { title: t("eraseAll"), kind: "warning", okLabel: t("eraseAll") });
+    if (!ok) return;
+    void run("erase", async () => void (await invoke("erase_chip", { portName, baudRate, options: connectOptions })), [
+      { id: "connect", status: "pending" },
+      { id: "detect", status: "pending" },
+      { id: "erase", status: "pending" },
+    ]);
+  };
+
+  const readFlash = async () => {
+    const m = chipInfo?.chip_match;
+    if (!portName || !m) return;
+    const startAddress = parseHexInput(fs.flashReadAddress);
+    const size = parseHexInput(fs.flashReadSize);
+    const flashEnd = m.flash_start + m.flash_kb * 1024;
+    let problem: string | null = null;
+    if (startAddress === null || size === null || size <= 0) problem = t("readRangeInvalid");
+    else if (startAddress % 4 !== 0) problem = t("readRangeAlign");
+    else if (startAddress < m.flash_start || startAddress + size > flashEnd)
+      problem = t("readRangeOutside", { from: hex32(m.flash_start), to: hex32(flashEnd - 1) });
+    if (problem) {
+      setOutcome({ kind: "error", message: problem });
+      return;
+    }
+    const savePath = await save({
+      defaultPath: `${m.name}_${startAddress!.toString(16).toUpperCase()}_${size!.toString(16).toUpperCase()}.bin`,
+      filters: [{ name: "BIN", extensions: ["bin"] }],
+    });
+    if (!savePath) return;
+    void run(
+      "read",
+      async () => {
+        await invoke("read_flash", { portName, baudRate, options: connectOptions, startAddress, size, savePath });
+        addLog(t("readSaved", { path: savePath }), "ok");
+      },
+      [
+        { id: "connect", status: "pending" },
+        { id: "verify", status: "pending" },
+      ]
+    );
+  };
+
+  const cancel = async () => {
+    try {
+      await invoke(isAvr ? "flash_avr_cancel" : "cancel_flash");
+      addLog(t("cancelling"), "warn");
+    } catch (e) {
+      addLog(t("cancelFailed", { error: extractError(e) }), "warn");
+    }
+  };
+
+  /* ---------- Derived display ---------- */
+  const currentStep = steps.find((s) => s.status === "current");
+  const eta = (() => {
+    if (!writeRate || currentStep?.id !== "write" || !firmware) return null;
+    const elapsed = (now - writeRate.start) / 1000;
+    if (elapsed < 0.5 || writeRate.bytes === 0) return null;
+    const remaining = Math.max(0, firmware.size - writeRate.bytes);
+    return Math.ceil(remaining / (writeRate.bytes / elapsed));
+  })();
+
+  const canFlash = Boolean(fs.firmwarePath && firmware && portName && !busy);
+  const chip = chipInfo?.chip_match;
+  const avrChip = AVR_CHIPS.find((c) => c.value === fs.avrChip);
+
+  const pinOptions = [
+    { value: "none:low", label: t("pinUnused") },
+    { value: "reset:low", label: t("pinResetLow") },
+    { value: "reset:high", label: t("pinResetHigh") },
+    { value: "bootloader:high", label: t("pinBootHigh") },
+    { value: "bootloader:low", label: t("pinBootLow") },
+  ];
+  const pinValue = (func: string, level: string) => (func === "none" ? "none:low" : `${func}:${level}`);
+  const setPin = (which: "rts" | "dtr", v: string) => {
+    const [func, level] = v.split(":");
+    if (which === "rts") {
+      fs.setRtsFunc(func);
+      fs.setRtsLevel(level);
+    } else {
+      fs.setDtrFunc(func);
+      fs.setDtrLevel(level);
+    }
+  };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center py-2.5 px-3 border-b border-border bg-surface-alt/50">
-        <h2 className="text-xs font-semibold text-text-primary tracking-wide flex items-center gap-2">
-          <Zap size={14} className="text-flash" />
-          {t("title")}
-        </h2>
-      </div>
-
-      <div className="flex-1 overflow-auto">
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
-          <span className="text-[0.625rem] text-text-muted shrink-0">{t("moduleLabel")}</span>
-          <ThemeSelect
-            value={flashModule}
-            onChange={(v) => {
-              setFlashModule(v);
-              setChipInfo(null);
-              clearLog();
-              setFlashResult(null);
-            }}
-            options={[
-              { value: "stm32-isp", label: t("moduleStm32Isp") },
-              { value: "arduino-avr", label: t("moduleArduinoAvr") },
-            ]}
-            className="min-w-[160px]"
-          />
-          <div className="w-px h-5 bg-border mx-0.5" />
-          <PortSelector value={portName} onChange={(p) => setConfig({ port_name: p })} disabled={isConnected || flashing} />
-          <BaudRateInput value={baudRate} onChange={(b) => setConfig({ baud_rate: b })} disabled={isConnected || flashing || flashModule === "arduino-avr"} />
-        </div>
-
-        {flashModule === "arduino-avr" && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
-            <span className="text-[0.625rem] text-text-muted">{t("avrChip")}</span>
-            <ThemeSelect
-              value={avrChip}
-              onChange={setAvrChip}
-              options={[
-                { value: "m328p", label: "ATmega328P (32KB)" },
-                { value: "m328", label: "ATmega328 (32KB)" },
-                { value: "m2560", label: "ATmega2560 (256KB)" },
-                { value: "m32u4", label: "ATmega32U4 (32KB)" },
-                { value: "m168p", label: "ATmega168P (16KB)" },
-                { value: "m168", label: "ATmega168 (16KB)" },
-                { value: "m88p", label: "ATmega88P (8KB)" },
-                { value: "m644p", label: "ATmega644P (64KB)" },
-                { value: "m1284p", label: "ATmega1284P (128KB)" },
-                { value: "t85", label: "ATtiny85 (8KB)" },
-                { value: "t84", label: "ATtiny84 (8KB)" },
-                { value: "m8", label: "ATmega8 (8KB)" },
-              ]}
-              className="min-w-[180px]"
-            />
-            <div className="w-px h-5 bg-border mx-0.5" />
-            <span className="text-[0.625rem] text-text-muted">{t("programmer")}</span>
-            <ThemeSelect
-              value={avrProgrammer}
-              onChange={setAvrProgrammer}
-              options={[
-                { value: "arduino", label: "Arduino" },
-                { value: "avrisp", label: "AVR ISP" },
-                { value: "usbasp", label: "USBasp" },
-                { value: "usbtiny", label: "USBtinyISP" },
-                { value: "stk500v1", label: "STK500 v1" },
-                { value: "stk500v2", label: "STK500 v2" },
-              ]}
-              className="min-w-[120px]"
-            />
-          </div>
-        )}
-
-        {flashModule === "stm32-isp" && (
-        <>
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
-          <div className="flex items-center gap-2">
-            <Toggle active={dtrRtsEnabled} onClick={() => setDtrRtsEnabled(!dtrRtsEnabled)} />
-            <span className="text-[0.6875rem] text-text-secondary font-medium">{t("dtrRts")}</span>
-          </div>
-          <div className="w-px h-5 bg-border mx-0.5" />
-          {dtrRtsEnabled && (
-            <>
-              <span className="text-[0.625rem] text-text-muted">{t("rtsFunction")}</span>
-              <ThemeSelect
-                value={rtsLevel}
-                onChange={setRtsLevel}
-                options={[
-                  { value: "low", label: t("levelLow") },
-                  { value: "high", label: t("levelHigh") },
-                ]}
-                className="min-w-[56px]"
-              />
-              <ThemeSelect
-                value={rtsFunc}
-                onChange={setRtsFunc}
-                options={[
-                  { value: "none", label: t("funcNone") },
-                  { value: "reset", label: t("funcReset") },
-                  { value: "bootloader", label: t("funcBootloader") },
-                ]}
-                className="min-w-[96px]"
-              />
-              <div className="w-px h-5 bg-border mx-0.5" />
-              <span className="text-[0.625rem] text-text-muted">{t("dtrFunction")}</span>
-              <ThemeSelect
-                value={dtrLevel}
-                onChange={setDtrLevel}
-                options={[
-                  { value: "low", label: t("levelLow") },
-                  { value: "high", label: t("levelHigh") },
-                ]}
-                className="min-w-[56px]"
-              />
-              <ThemeSelect
-                value={dtrFunc}
-                onChange={setDtrFunc}
-                options={[
-                  { value: "none", label: t("funcNone") },
-                  { value: "reset", label: t("funcReset") },
-                  { value: "bootloader", label: t("funcBootloader") },
-                ]}
-                className="min-w-[96px]"
-              />
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center gap-4 px-2.5 py-1.5 border-b border-border bg-surface-alt/50">
-          <div className="flex items-center gap-2">
-            <Toggle active={optVerify} onClick={() => setOptVerify(!optVerify)} />
-            <span className="text-[0.6875rem] text-text-secondary">{t("verify")}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Toggle active={optRunAfter} onClick={() => setOptRunAfter(!optRunAfter)} />
-            <span className="text-[0.6875rem] text-text-secondary">{t("runAfter")}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Toggle active={autoResumeMonitor} onClick={() => setAutoResumeMonitor(!autoResumeMonitor)} />
-            <span className="text-[0.6875rem] text-text-secondary">{t("autoResumeMonitor")}</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-alt/50 flex-wrap">
+    <div className="grid grid-cols-[minmax(300px,340px)_1fr] h-full min-h-0">
+      {/* ---------------- Setup ---------------- */}
+      <aside className="flex flex-col min-h-0 border-r border-line">
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-[18px] space-y-[18px]">
           <button
-            onClick={handleReadChip}
-            disabled={!canHelper}
-            className={clsx(rowBtn, "bg-surface border-border text-text-secondary hover:bg-surface-hover disabled:opacity-40")}
-          >
-            <Cpu size={13} />
-            {t("readChip")}
-          </button>
-          <button
-            onClick={handleErase}
-            disabled={!canHelper}
-            className={clsx(rowBtn, "bg-surface border-red-500/30 text-red-500 hover:bg-red-500/10 disabled:opacity-40")}
-          >
-            <Trash2 size={13} />
-            {t("erase")}
-          </button>
-          <div className="w-px h-5 bg-border mx-0.5" />
-          <span className="text-[0.625rem] text-text-muted">Read</span>
-          <input
-            value={flashReadAddress}
-            onChange={(e) => setFlashReadAddress(e.target.value)}
-            className={clsx(inputClass, "w-[120px]")}
-            placeholder="0x08000000"
-            disabled={flashing}
-          />
-          <input
-            value={flashReadSize}
-            onChange={(e) => setFlashReadSize(e.target.value)}
-            className={clsx(inputClass, "w-[92px]")}
-            placeholder="0x20000"
-            disabled={flashing}
-          />
-          <button
-            onClick={handleReadFlash}
-            disabled={!canHelper || !chipInfo?.chip_match}
-            className={clsx(rowBtn, "bg-surface border-border text-text-secondary hover:bg-surface-hover disabled:opacity-40")}
-          >
-            <FileDown size={13} />
-            {t("readFlash")}
-          </button>
-        </div>
-        </>
-        )}
-
-        <div className="p-3 space-y-3">
-          {chipInfo && (
-            <div className="rounded-lg border border-border bg-surface-alt/30 p-3 text-[0.6875rem] font-mono space-y-0.5">
-              <p>
-                Device ID: <span className="text-accent">{chipInfo.device_id_hex}</span> | Bootloader: v
-                {chipInfo.bootloader_version >> 4}.{chipInfo.bootloader_version & 0xF}
-              </p>
-              {chipInfo.chip_match ? (
-                <p className="text-green-600 dark:text-green-400">
-                  {chipInfo.chip_match.name} ({chipInfo.chip_match.flash_kb}KB Flash / {chipInfo.chip_match.ram_kb}KB RAM)
-                </p>
-              ) : (
-                <p className="text-yellow-500">Unknown chip - flash only if the firmware target is confirmed</p>
-              )}
-            </div>
-          )}
-
-          <div
-            onDrop={handleDrop}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onClick={handleFilePicker}
+            type="button"
+            onClick={pickFirmware}
+            disabled={busy}
             className={clsx(
-              "relative border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-colors",
-              dragOver ? "border-accent bg-accent/5" : firmware ? "border-green-500/30 bg-green-500/5" : "border-border hover:border-border-strong bg-surface-alt/20"
+              "w-full grid grid-cols-[36px_1fr] gap-x-3 gap-y-0.5 items-center p-3.5 rounded-lg border border-dashed text-left transition-colors",
+              dragOver ? "border-accent bg-accent/10" : "border-line-strong hover:border-ink-3",
+              "disabled:opacity-60"
             )}
           >
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.6" className="row-span-2 text-accent" aria-hidden>
+              <path d="M7 3.5h9l5 5v16H7z" />
+              <path d="M16 3.5v5h5" />
+              {firmware ? <path d="M11 17h6M11 20.5h4" /> : <path d="M14 13v8M10.5 16.5L14 13l3.5 3.5" />}
+            </svg>
             {firmware ? (
-              <div className="space-y-1">
-                <CheckCircle size={24} className="mx-auto text-green-500" />
-                <p className="text-[0.6875rem] font-medium text-text-primary">{firmware.filename}</p>
-                <p className="text-[0.625rem] text-text-muted">
-                  {firmware.format} · {formatSize(firmware.size)} · {firmware.segments.length} segment(s)
-                </p>
-                {firmware.segments.map((segment, index) => (
-                  <p key={index} className="text-[0.5625rem] text-text-muted font-mono">
-                    {segment.range}
-                  </p>
-                ))}
-                <p className="text-[0.5625rem] text-text-muted font-mono mt-1">
-                  SHA256: {firmware.checksum.slice(0, 16)}...
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Upload size={24} className="mx-auto text-text-muted" />
-                <p className="text-[0.6875rem] text-text-secondary">{t("dropFileHint")}</p>
-                <p className="text-[0.5625rem] text-text-muted">{t("supportedFormats")}</p>
-              </div>
-            )}
-          </div>
-
-          <button
-            onClick={handleFlash}
-            disabled={!canFlash}
-            className={clsx(
-              "w-full py-2 px-4 rounded text-xs font-medium transition-colors flex items-center justify-center gap-2",
-              canFlash ? "bg-flash text-white hover:opacity-90" : "bg-surface-alt border border-border text-text-muted cursor-not-allowed"
-            )}
-          >
-            {flashing ? (
               <>
-                <Loader2 size={14} className="animate-spin" />
-                {stageLabel(progress?.stage)} ({progress?.percent || 0}%)
+                <span className="font-mono text-md font-semibold truncate">{firmware.filename}</span>
+                <span className="text-xs text-ink-3 truncate">
+                  {t("firmwareMeta", {
+                    format: firmware.format.toUpperCase(),
+                    size: formatSize(firmware.size),
+                    start: hex32(Math.min(...firmware.segments.map((s) => s.address))),
+                  })}
+                </span>
               </>
             ) : (
               <>
-                <Zap size={14} />
-                {t("startFlash")}
+                <span className="text-md font-semibold">{dragOver ? t("dropToLoad") : t("chooseFirmware")}</span>
+                <span className="text-xs text-ink-3">{t("chooseFirmwareHint")}</span>
               </>
             )}
           </button>
 
-          {flashing && (
-            <button
-              onClick={handleCancel}
-              className="w-full py-2 px-4 rounded text-xs font-medium transition-colors flex items-center justify-center gap-2 bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20"
-            >
-              <XCircle size={14} />
-              Cancel
-            </button>
-          )}
+          <FieldGroup title={t("groupMethod")}>
+            <FieldRow label={t("method")}>
+              <Select
+                aria-label={t("method")}
+                value={fs.flashModule}
+                onChange={(v) => {
+                  fs.setFlashModule(v);
+                  setChipInfo(null);
+                  setOutcome(null);
+                  setSteps([]);
+                  setWritten([]);
+                }}
+                disabled={busy}
+                options={[
+                  { value: "stm32-isp", label: t("moduleStm32Isp") },
+                  { value: "arduino-avr", label: t("moduleArduinoAvr") },
+                ]}
+                className="w-[176px]"
+              />
+            </FieldRow>
+            {isAvr ? (
+              <>
+                <FieldRow label={t("chip")}>
+                  <Select
+                    aria-label={t("chip")}
+                    value={fs.avrChip}
+                    onChange={fs.setAvrChip}
+                    disabled={busy}
+                    options={AVR_CHIPS.map((c) => ({ value: c.value, label: c.name, hint: `${c.flashKb} KB` }))}
+                    className="w-[176px]"
+                    mono
+                  />
+                </FieldRow>
+                <FieldRow label={t("programmer")}>
+                  <Select
+                    aria-label={t("programmer")}
+                    value={fs.avrProgrammer}
+                    onChange={fs.setAvrProgrammer}
+                    disabled={busy}
+                    options={AVR_PROGRAMMERS}
+                    className="w-[176px]"
+                  />
+                </FieldRow>
+              </>
+            ) : (
+              <FieldRow label={t("chip")} hint={chip ? undefined : t("chipAutoHint")}>
+                <Button size="sm" onClick={detectChip} disabled={busy || !portName}>
+                  {chip ? chip.name : t("detectChip")}
+                </Button>
+              </FieldRow>
+            )}
+          </FieldGroup>
 
-          {flashing && progress && (
-            <div className="rounded-lg border border-border bg-surface-alt/30 p-3 space-y-2">
-              <div className="h-1.5 bg-surface-alt rounded-full overflow-hidden border border-border">
-                <div className="h-full bg-flash rounded-full transition-all duration-300 ease-out" style={{ width: `${progress.percent}%` }} />
-              </div>
-              <p className="text-[0.625rem] text-text-muted text-center">
-                {stageLabel(progress.stage)} - {progress.percent}%
-              </p>
-              <p className="text-[0.625rem] text-text-secondary text-center">{progress.message}</p>
-            </div>
-          )}
-
-          {flashResult && (
-            <div
-              className={clsx(
-                "p-3 rounded-lg flex items-center gap-2 text-[0.6875rem]",
-                flashResult === "success"
-                  ? "bg-green-500/10 border border-green-500/30 text-green-600 dark:text-green-400"
-                  : flashResult === "cancelled"
-                    ? "bg-yellow-500/10 border border-yellow-500/30 text-yellow-600 dark:text-yellow-400"
-                    : "bg-flash-error/10 border border-flash-error/30 text-flash-error"
+          {!isAvr && (
+            <FieldGroup title={t("groupBootloader")}>
+              <FieldRow label={t("autoReset")} hint={fs.dtrRtsEnabled ? undefined : t("autoResetOffHint")}>
+                <Switch aria-label={t("autoReset")} checked={fs.dtrRtsEnabled} onChange={fs.setDtrRtsEnabled} disabled={busy} />
+              </FieldRow>
+              {fs.dtrRtsEnabled && (
+                <>
+                  <FieldRow label={t("rtsPin")} indent>
+                    <Select aria-label={t("rtsPin")} value={pinValue(fs.rtsFunc, fs.rtsLevel)} onChange={(v) => setPin("rts", v)} options={pinOptions} disabled={busy} className="w-[156px]" />
+                  </FieldRow>
+                  <FieldRow label={t("dtrPin")} indent>
+                    <Select aria-label={t("dtrPin")} value={pinValue(fs.dtrFunc, fs.dtrLevel)} onChange={(v) => setPin("dtr", v)} options={pinOptions} disabled={busy} className="w-[156px]" />
+                  </FieldRow>
+                </>
               )}
-            >
-              {flashResult === "success" ? <CheckCircle size={16} /> : flashResult === "cancelled" ? <XCircle size={16} /> : <XCircle size={16} />}
-              {flashResult === "success" ? "Flash complete!" : flashResult === "cancelled" ? "Operation cancelled" : "Flash failed - see log below"}
-            </div>
+            </FieldGroup>
           )}
 
-          {flashLog.length > 0 && (
-            <div className="rounded-lg border border-border bg-surface-alt/30 p-3 font-mono text-[0.625rem] max-h-48 overflow-auto space-y-0.5 select-text">
-              {flashLog.map((line) => (
-                <p
-                  key={line.id}
-                  className={
-                    line.text.startsWith("[ERROR]")
-                      ? "text-flash-error"
-                      : line.text.startsWith("[WARN]")
-                        ? "text-yellow-500"
-                        : "text-text-secondary"
-                  }
-                >
-                  {line.text}
-                </p>
+          <FieldGroup title={t("groupAfter")}>
+            <FieldRow label={t("verifyAfterFlash")}>
+              <Switch aria-label={t("verifyAfterFlash")} checked={fs.verify} onChange={fs.setVerify} disabled={busy} />
+            </FieldRow>
+            <FieldRow label={t("runAfter")}>
+              <Switch aria-label={t("runAfter")} checked={fs.runAfter} onChange={fs.setRunAfter} disabled={busy} />
+            </FieldRow>
+            <FieldRow label={t("autoResumeMonitor")} hint={fs.runAfter ? undefined : t("resumeNeedsRun")}>
+              <Switch aria-label={t("autoResumeMonitor")} checked={autoResumeMonitor && fs.runAfter} onChange={setAutoResumeMonitor} disabled={busy || !fs.runAfter} />
+            </FieldRow>
+          </FieldGroup>
+
+          {!isAvr && (
+            <FieldGroup title={t("groupTools")}>
+              <FieldRow label={t("readFlash")} hint={chip ? undefined : t("readNeedsChip")}>
+                <Button size="sm" onClick={readFlash} disabled={busy || !chip}>
+                  {t("readFlashAction")}
+                </Button>
+              </FieldRow>
+              {chip && (
+                <div className="flex items-center gap-2 pl-5 pb-1">
+                  <HexInput label={t("readFrom")} value={fs.flashReadAddress} onChange={fs.setFlashReadAddress} disabled={busy} />
+                  <HexInput label={t("readLength")} value={fs.flashReadSize} onChange={fs.setFlashReadSize} disabled={busy} />
+                </div>
+              )}
+              <FieldRow label={t("eraseAll")}>
+                <Button size="sm" variant="danger" onClick={eraseChip} disabled={busy || !portName}>
+                  {t("eraseAction")}
+                </Button>
+              </FieldRow>
+            </FieldGroup>
+          )}
+        </div>
+
+        <div className="px-5 py-3.5 border-t border-line">
+          {busy ? (
+            <Button variant="danger" size="md" className="w-full" onClick={cancel}>
+              {t("cancelFlash")}
+            </Button>
+          ) : (
+            <Button variant="primary" size="md" className="w-full" onClick={startFlash} disabled={!canFlash}>
+              {t("startFlash")}
+            </Button>
+          )}
+          {!busy && !canFlash && (
+            <p className="mt-2 text-xs text-ink-3 text-center">{!firmware ? t("needFirmware") : t("needPort")}</p>
+          )}
+        </div>
+      </aside>
+
+      {/* ---------------- Run ---------------- */}
+      <section className="flex flex-col min-w-0 min-h-0">
+        <header className="px-6 pt-[18px] pb-1 flex items-baseline gap-3.5 flex-wrap">
+          <h2 className="m-0 font-mono text-xl font-semibold tracking-[-0.01em]">
+            {isAvr ? avrChip?.name : chip ? chip.name : chipInfo ? chipInfo.device_id_hex : t("chipNotDetected")}
+          </h2>
+          <p className="m-0 text-sm text-ink-3">
+            {isAvr && avrChip
+              ? t("chipSpecs", { flash: avrChip.flashKb, ram: avrChip.ramKb })
+              : chip
+                ? t("chipSpecsBoot", {
+                    flash: chip.flash_kb,
+                    ram: chip.ram_kb,
+                    boot: `${chipInfo!.bootloader_version >> 4}.${chipInfo!.bootloader_version & 0xf}`,
+                  })
+                : chipInfo
+                  ? t("chipUnknown")
+                  : t("chipNotDetectedHint")}
+          </p>
+        </header>
+
+        <StatusLine
+          op={op}
+          step={currentStep}
+          progress={progress}
+          outcome={outcome}
+          eta={eta}
+          firmwareLoaded={Boolean(firmware)}
+        />
+
+        <div className="px-6 pt-3.5 pb-3.5">
+          {geometry ? (
+            <PageMap geometry={geometry} firmware={firmwareCells} written={written} activeCell={activeCell} />
+          ) : (
+            <p className="py-6 text-sm text-ink-3">{t("mapEmpty")}</p>
+          )}
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto border-t border-line px-6 py-2.5">
+          {steps.length > 0 ? (
+            <ol className="list-none m-0 p-0">
+              {steps.map((s) => (
+                <StepRow
+                  key={s.id}
+                  step={s}
+                  now={now}
+                  label={stepLabel(t, s.id, { isAvr, writtenPages, firmwarePages, resume: autoResumeMonitor && Boolean(isConnected || op) })}
+                />
               ))}
+            </ol>
+          ) : (
+            <p className="text-sm text-ink-3 leading-[26px]">{firmware ? t("readyHint") : t("idleHint")}</p>
+          )}
+
+          {log.length > 0 && (
+            <div className="mt-3">
+              <button type="button" onClick={() => setShowLog(!showLog)} className="text-xs text-ink-3 hover:text-ink-2">
+                {showLog ? t("hideLog") : t("showLog", { count: log.length })}
+              </button>
+              {showLog && (
+                <div className="mt-1.5 max-h-48 overflow-auto rounded border border-line bg-chrome px-3 py-2 font-mono text-xs leading-5 select-text">
+                  {log.map((l) => (
+                    <div key={l.id} className={clsx({ "text-ink-2": l.tone === "info", "text-ok": l.tone === "ok", "text-warn": l.tone === "warn", "text-err": l.tone === "error" })}>
+                      {l.text}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
+      </section>
+    </div>
+  );
+}
+
+/* ---------------- Pieces ---------------- */
+
+function HexInput({ label, value, onChange, disabled }: { label: string; value: string; onChange: (v: string) => void; disabled?: boolean }) {
+  const invalid = value.trim() !== "" && parseHexInput(value) === null;
+  return (
+    <label className="flex-1 min-w-0">
+      <span className="block text-2xs text-ink-3 mb-0.5">{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        spellCheck={false}
+        aria-invalid={invalid}
+        className={clsx(
+          "w-full h-7 px-2 rounded border bg-base font-mono text-xs text-ink focus:outline-none",
+          invalid ? "border-err" : "border-line focus:border-accent"
+        )}
+      />
+    </label>
+  );
+}
+
+type TFn = ReturnType<typeof useTranslation>["t"];
+
+function stepLabel(
+  t: TFn,
+  id: Step["id"],
+  ctx: { isAvr: boolean; writtenPages: number; firmwarePages: number; resume: boolean }
+): string {
+  switch (id) {
+    case "connect":
+      return ctx.isAvr ? t("stepConnectAvr") : t("stepConnect");
+    case "detect":
+      return t("stepDetect");
+    case "erase":
+      return t("stepErase");
+    case "write":
+      return ctx.firmwarePages > 0 ? t("stepWritePages", { done: ctx.writtenPages, total: ctx.firmwarePages }) : t("stepWrite");
+    case "verify":
+      return t("stepVerify");
+    case "run":
+      return ctx.resume ? t("stepRunResume") : t("stepRun");
+  }
+}
+
+function StepRow({ step, label, now }: { step: Step; label: string; now: number }) {
+  const seconds =
+    step.startedAt !== undefined ? ((step.endedAt ?? (step.status === "current" ? now : step.startedAt)) - step.startedAt) / 1000 : null;
+  return (
+    <li
+      className={clsx(
+        "grid grid-cols-[22px_1fr_auto] items-center leading-[26px] text-sm",
+        step.status === "current" && "font-semibold",
+        step.status === "pending" && "text-ink-3",
+        step.status === "failed" && "text-err"
+      )}
+    >
+      {step.status === "done" ? (
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-ok" aria-hidden><path d="M2.5 7.5l3 3 6-7" /></svg>
+      ) : step.status === "current" ? (
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" className="text-accent" aria-hidden><circle cx="7" cy="7" r="3.5" /></svg>
+      ) : step.status === "failed" ? (
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden><circle cx="7" cy="7" r="3.5" /></svg>
+      )}
+      <span>{label}</span>
+      <span className="font-mono text-xs font-normal text-ink-3 tabular-nums">{seconds !== null ? `${seconds.toFixed(2)} s` : ""}</span>
+    </li>
+  );
+}
+
+function StatusLine({
+  op,
+  step,
+  progress,
+  outcome,
+  eta,
+  firmwareLoaded,
+}: {
+  op: Operation | null;
+  step: Step | undefined;
+  progress: FlashProgress | null;
+  outcome: Outcome;
+  eta: number | null;
+  firmwareLoaded: boolean;
+}) {
+  const { t } = useTranslation("flash");
+
+  if (op) {
+    const now = step ? t(`now_${step.id}`) : t("now_connect");
+    return (
+      <div className="px-6 pt-2.5 flex items-baseline gap-2.5" aria-live="polite">
+        <span className="text-lg font-semibold">{now}</span>
+        {progress?.address !== undefined && <span className="font-mono text-sm text-ink-2">{hex32(progress.address)}</span>}
+        <span className="ml-auto text-sm text-ink-3">{eta !== null ? t("etaSeconds", { count: eta }) : ""}</span>
+        <span className="font-mono text-lg font-semibold text-accent tabular-nums">{progress ? `${Math.min(100, progress.percent)}%` : ""}</span>
       </div>
+    );
+  }
+
+  if (outcome) {
+    const tone = outcome.kind === "success" ? "text-ok" : outcome.kind === "cancelled" ? "text-warn" : "text-err";
+    return (
+      <div className="px-6 pt-2.5" role="status">
+        <p className={clsx("m-0 text-lg font-semibold", tone)}>
+          {outcome.kind === "success"
+            ? t("doneIn", { seconds: (outcome.seconds ?? 0).toFixed(1) })
+            : outcome.kind === "cancelled"
+              ? t("cancelled")
+              : t("failed")}
+        </p>
+        {outcome.kind === "error" && outcome.message && (
+          <p className="m-0 mt-1 text-sm text-ink-2 select-text">{outcome.message}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-6 pt-2.5">
+      <p className="m-0 text-lg font-semibold text-ink-2">{firmwareLoaded ? t("ready") : t("waitingFirmware")}</p>
     </div>
   );
 }

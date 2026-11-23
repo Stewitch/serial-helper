@@ -26,6 +26,7 @@ pub fn run() {
             commands::serial_cmd::serial_active_port,
             commands::serial_cmd::serial_set_dtr,
             commands::serial_cmd::serial_set_rts,
+            commands::serial_cmd::save_text_file,
             commands::flash_cmd::parse_firmware,
             commands::flash_cmd::parse_firmware_cached,
             commands::flash_cmd::read_chip_info,

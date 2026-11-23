@@ -62,3 +62,11 @@ pub fn serial_set_rts(state: State<AppState>, enabled: bool) -> Result<(), AppEr
     let manager = state.serial_manager.read();
     manager.set_rts(enabled)
 }
+
+/// Writes a monitor log the user chose to save. The path comes from the native
+/// save dialog, so it is always one the user picked.
+#[tauri::command]
+pub fn save_text_file(path: String, content: String) -> Result<(), AppError> {
+    std::fs::write(&path, content)?;
+    Ok(())
+}

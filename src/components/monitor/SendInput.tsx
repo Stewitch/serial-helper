@@ -1,161 +1,142 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useSettingsStore } from "@/stores/settingsStore";
-import { Send, Hash } from "lucide-react";
 import clsx from "clsx";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { encodeText } from "@/lib/textCodec";
+import { Button, Kbd, Segmented } from "@/components/ui";
+
+const MAX_HISTORY = 100;
+const ENDINGS = { CRLF: "\r\n", LF: "\n", CR: "\r", NONE: "" } as const;
+type Ending = keyof typeof ENDINGS;
 
 interface SendInputProps {
-  onSend: (data: number[]) => void;
+  /** `display` is what the monitor log shows for this send. */
+  onSend: (data: number[], display: string) => void;
   disabled?: boolean;
 }
 
-const MAX_HISTORY = 100;
+function parseHex(text: string): number[] | null {
+  const cleaned = text.replace(/0x/gi, "").replace(/[\s,]/g, "");
+  if (!cleaned || cleaned.length % 2 !== 0 || /[^0-9a-f]/i.test(cleaned)) return null;
+  const out: number[] = [];
+  for (let i = 0; i < cleaned.length; i += 2) out.push(parseInt(cleaned.slice(i, i + 2), 16));
+  return out;
+}
+
+const toHex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
 
 export function SendInput({ onSend, disabled }: SendInputProps) {
   const { t } = useTranslation("monitor");
-  const lineEnding = useSettingsStore((s) => s.lineEnding);
+  const lineEnding = useSettingsStore((s) => s.lineEnding) as Ending;
+  const setLineEnding = useSettingsStore((s) => s.setLineEnding);
+  const encoding = useSettingsStore((s) => s.encoding);
   const [text, setText] = useState("");
-  const [hexMode, setHexMode] = useState(false);
+  const [mode, setMode] = useState<"text" | "hex">("text");
   const [history, setHistory] = useState<string[]>([]);
-  const [_historyIdx, setHistoryIdx] = useState(-1);
+  const historyIdx = useRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const getLineEnding = useCallback(() => {
-    switch (lineEnding) {
-      case "CRLF": return "\r\n";
-      case "LF": return "\n";
-      case "CR": return "\r";
-    }
-  }, [lineEnding]);
-
-  const parsedHexPreview = (() => {
-    if (!hexMode || !text.trim()) return null;
-    const cleaned = text.replace(/\s/g, "");
-    if (cleaned.length % 2 !== 0) return { valid: false, bytes: [] as number[] };
-    const bytes: number[] = [];
-    for (let i = 0; i < cleaned.length; i += 2) {
-      const b = parseInt(cleaned.slice(i, i + 2), 16);
-      if (isNaN(b)) return { valid: false, bytes: [] as number[] };
-      bytes.push(b);
-    }
-    return { valid: true, bytes };
-  })();
+  const hexBytes = useMemo(() => (mode === "hex" && text.trim() ? parseHex(text) : null), [mode, text]);
+  const hexInvalid = mode === "hex" && text.trim().length > 0 && hexBytes === null;
+  const canSend = !disabled && (mode === "hex" ? hexBytes !== null : text.length > 0);
 
   const doSend = useCallback(() => {
+    if (!canSend) return;
     let data: number[];
-    if (hexMode) {
-      if (!parsedHexPreview?.valid) return;
-      data = parsedHexPreview.bytes;
+    let display: string;
+    if (mode === "hex") {
+      data = hexBytes!;
+      display = toHex(data);
     } else {
-      const encoder = new TextEncoder();
-      const ending = getLineEnding();
-      data = Array.from(encoder.encode(text + ending));
+      data = encodeText(text + ENDINGS[lineEnding], encoding);
+      display = text;
     }
+    onSend(data, display);
+    setHistory((prev) => [text, ...prev.filter((h) => h !== text)].slice(0, MAX_HISTORY));
+    historyIdx.current = -1;
+    if (mode === "text") setText("");
+  }, [canSend, mode, hexBytes, text, lineEnding, encoding, onSend]);
 
-    if (data.length > 0) {
-      onSend(data);
-      setHistory((prev) => {
-        const next = [text, ...prev.filter((h) => h !== text)].slice(0, MAX_HISTORY);
-        return next;
-      });
-      setHistoryIdx(-1);
-      if (!hexMode) setText("");
-    }
-  }, [text, hexMode, getLineEnding, onSend, parsedHexPreview]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        doSend();
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHistoryIdx((prev) => {
-          const next = Math.min(prev + 1, history.length - 1);
-          if (next >= 0 && history[next] != null) setText(history[next]);
-          return next;
-        });
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHistoryIdx((prev) => {
-          const next = Math.max(prev - 1, -1);
-          setText(next >= 0 ? history[next] || "" : "");
-          return next;
-        });
-      } else if (e.key === "Escape") {
-        inputRef.current?.blur();
-      }
-    },
-    [doSend, history]
-  );
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const canSend = hexMode
-    ? parsedHexPreview?.valid === true
-    : text.trim().length > 0;
+  const recall = (dir: 1 | -1) => {
+    const next = Math.max(-1, Math.min(history.length - 1, historyIdx.current + dir));
+    historyIdx.current = next;
+    setText(next >= 0 ? history[next] : "");
+  };
 
   return (
-    <div className="flex flex-col border-t border-border bg-surface-alt/50">
-      {/* Hex preview */}
-      {hexMode && text.trim() && (
-        <div className="px-3 py-1 border-b border-border bg-surface font-mono text-[0.6875rem] flex items-center gap-2">
-          <span className="text-text-muted shrink-0">HEX:</span>
-          {parsedHexPreview?.valid ? (
-            <span className="text-monitor-tx">
-              {parsedHexPreview.bytes.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}
-              <span className="text-text-muted ml-2">
-                ({parsedHexPreview.bytes.length} bytes)
-              </span>
-            </span>
-          ) : (
-            <span className="text-flash-error">Invalid hex input</span>
+    <div className="border-t border-line px-3 py-2.5 shrink-0">
+      <div className="flex items-center gap-2">
+        <Segmented
+          aria-label={t("sendMode")}
+          value={mode}
+          onChange={setMode}
+          mono={false}
+          options={[
+            { value: "text", label: t("modeText") },
+            { value: "hex", label: "HEX" },
+          ]}
+        />
+        <div
+          className={clsx(
+            "flex-1 flex items-center gap-2 h-[34px] px-3 rounded-md bg-raised border",
+            hexInvalid ? "border-err" : "border-line-strong focus-within:border-accent",
+            disabled && "opacity-50"
           )}
-        </div>
-      )}
-
-      {/* Input row */}
-      <div className="flex items-center gap-2 px-3 py-2">
-        <span className="text-[0.625rem] text-text-muted font-medium shrink-0">
-          {t("send")}
-        </span>
-
-        <div className="flex-1 relative">
+        >
           <input
             ref={inputRef}
-            type="text"
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
+            onChange={(e) => {
+              setText(e.target.value);
+              historyIdx.current = -1;
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                doSend();
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                recall(1);
+              } else if (e.key === "ArrowDown") {
+                e.preventDefault();
+                recall(-1);
+              }
+            }}
             disabled={disabled}
-            placeholder={hexMode ? "00 FF A5 ..." : (t("inputPlaceholder") || "")}
-            className="w-full h-7 px-2.5 text-xs bg-surface border border-border rounded font-mono text-text-primary placeholder:text-text-muted/60 focus:outline-none focus:border-accent disabled:opacity-40 transition-colors"
+            placeholder={disabled ? t("sendDisabledHint") : mode === "hex" ? "AA 55 01 FF" : t("inputPlaceholder")}
+            aria-label={t("send")}
+            aria-invalid={hexInvalid}
+            className="flex-1 min-w-0 bg-transparent font-mono text-sm text-ink placeholder:text-ink-3 placeholder:font-sans focus:outline-none"
           />
+          <span className="flex items-center gap-1.5 text-xs text-ink-3 shrink-0">
+            {hexInvalid ? (
+              <span className="text-err">{t("hexInvalid")}</span>
+            ) : hexBytes ? (
+              <span className="font-mono">{t("byteCount", { count: hexBytes.length })}</span>
+            ) : (
+              !disabled && (
+                <>
+                  <Kbd>↑</Kbd> {t("sendHistory")}
+                </>
+              )
+            )}
+          </span>
         </div>
-
-        <button
-          onClick={() => setHexMode(!hexMode)}
-          className={clsx(
-            "h-7 px-2 text-[0.625rem] font-medium rounded border transition-colors shrink-0 flex items-center gap-1",
-            hexMode
-              ? "bg-accent text-white border-accent"
-              : "bg-surface border-border text-text-muted hover:text-text-secondary hover:border-border-strong"
-          )}
-        >
-          <Hash size={11} />
-          HEX
-        </button>
-
-        <button
-          onClick={doSend}
-          disabled={disabled || !canSend}
-          className="h-7 px-3 text-xs font-medium bg-accent text-white rounded hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0 flex items-center gap-1"
-        >
-          <Send size={11} />
+        <Segmented
+          aria-label={t("common:lineEnding")}
+          value={lineEnding}
+          onChange={setLineEnding}
+          disabled={mode === "hex"}
+          options={[
+            { value: "CRLF", label: "CRLF", title: "\\r\\n" },
+            { value: "LF", label: "LF", title: "\\n" },
+            { value: "CR", label: "CR", title: "\\r" },
+            { value: "NONE", label: t("endingNone") },
+          ]}
+        />
+        <Button variant="primary" size="md" onClick={doSend} disabled={!canSend}>
           {t("send")}
-        </button>
+        </Button>
       </div>
     </div>
   );

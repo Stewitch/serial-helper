@@ -13,12 +13,16 @@
     "windows": [
       {
         "title": "SerialHelper",
-        "width": 1100,
-        "height": 700,
-        "minWidth": 800,
-        "minHeight": 500,
+        "width": 1180,
+        "height": 740,
+        "minWidth": 860,
+        "minHeight": 540,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "label": "main",
+        "decorations": false,
+        "shadow": true,
+        "center": true
       }
     ],
     "security": {
