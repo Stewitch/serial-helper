@@ -103,7 +103,7 @@ export function SettingsPage() {
           <div className="flex items-center gap-3 py-1">
             <BrandMark size={28} />
             <div>
-              <p className="m-0 text-md font-semibold">SerialHelper</p>
+              <p className="m-0 text-md font-semibold">Serial Helper</p>
               <p className="m-0 text-xs text-ink-3 font-mono">v{appVersion}</p>
             </div>
           </div>
