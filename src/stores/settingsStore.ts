@@ -18,6 +18,7 @@ interface SettingsStore {
   autoResumeMonitor: boolean;
   autoNavigateMonitorAfterFlash: boolean;
   monitorMaxLines: number;
+  sidebarExpanded: boolean;
 
   setTheme: (theme: ThemePreset) => void;
   setLanguage: (lang: string) => void;
@@ -31,6 +32,7 @@ interface SettingsStore {
   setAutoReconnect: (reconnect: boolean) => void;
   setAutoResumeMonitor: (resume: boolean) => void;
   setAutoNavigateMonitorAfterFlash: (navigate: boolean) => void;
+  toggleSidebar: () => void;
   applyTheme: () => void;
   applyUiScale: () => void;
   persist: () => void;
@@ -38,7 +40,7 @@ interface SettingsStore {
 
 function loadSettings(): Partial<SettingsStore> {
   try {
-    const raw = localStorage.getItem("serialhelper-settings");
+    const raw = localStorage.getItem("serial-helper-settings");
     if (raw) return JSON.parse(raw);
   } catch {}
   return {};
@@ -67,6 +69,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   autoResumeMonitor: saved.autoResumeMonitor ?? true,
   autoNavigateMonitorAfterFlash: saved.autoNavigateMonitorAfterFlash ?? true,
   monitorMaxLines: saved.monitorMaxLines || 50000,
+  sidebarExpanded: saved.sidebarExpanded ?? false,
 
   setTheme: (theme) => {
     set({ theme });
@@ -118,6 +121,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ autoNavigateMonitorAfterFlash });
     get().persist();
   },
+  toggleSidebar: () => {
+    set({ sidebarExpanded: !get().sidebarExpanded });
+    get().persist();
+  },
   applyTheme: () => {
     const { theme } = get();
     const resolved = theme === "system" ? getSystemTheme() : theme;
@@ -143,7 +150,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       autoResumeMonitor: state.autoResumeMonitor,
       autoNavigateMonitorAfterFlash: state.autoNavigateMonitorAfterFlash,
       monitorMaxLines: state.monitorMaxLines,
+      sidebarExpanded: state.sidebarExpanded,
     };
-    localStorage.setItem("serialhelper-settings", JSON.stringify(toSave));
+    localStorage.setItem("serial-helper-settings", JSON.stringify(toSave));
   },
 }));

@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import { Settings } from "lucide-react";
 import type { AppPage } from "@/stores/appStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 const ICON = { width: 20, height: 20, viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.5 } as const;
 
@@ -39,30 +40,48 @@ const LABEL_KEY: Record<AppPage, string> = {
 
 export function Rail({ active, onNavigate }: { active: AppPage; onNavigate: (page: AppPage) => void }) {
   const { t } = useTranslation();
+  const expanded = useSettingsStore((s) => s.sidebarExpanded);
 
   const item = (page: AppPage) => {
     const on = page === active;
+    const label = t(LABEL_KEY[page]);
     return (
       <button
         key={page}
         type="button"
         onClick={() => onNavigate(page)}
         aria-current={on ? "page" : undefined}
-        title={t(LABEL_KEY[page])}
-        aria-label={t(LABEL_KEY[page])}
+        title={expanded ? undefined : label}
+        aria-label={label}
         className={clsx(
-          "relative w-10 h-10 grid place-items-center rounded-lg transition-colors",
+          "relative w-full h-10 flex items-center rounded-lg transition-colors",
           on ? "text-ink bg-raised" : "text-ink-3 hover:text-ink-2 hover:bg-raised/60"
         )}
       >
         {on && <span aria-hidden className="absolute -left-2 top-[11px] bottom-[11px] w-[3px] rounded-r-sm bg-accent" />}
-        {icons[page]}
+        {/* The icon cell keeps its place, so icons do not shift while the drawer moves. */}
+        <span className="w-10 h-10 grid place-items-center shrink-0">{icons[page]}</span>
+        <span
+          aria-hidden
+          className={clsx(
+            "pr-3 text-sm whitespace-nowrap overflow-hidden transition-opacity duration-200 motion-reduce:transition-none",
+            expanded ? "opacity-100" : "opacity-0"
+          )}
+        >
+          {label}
+        </span>
       </button>
     );
   };
 
   return (
-    <nav className="flex flex-col items-center gap-1 py-2 bg-chrome border-r border-line">
+    <nav
+      className={clsx(
+        "flex flex-col gap-1 py-2 px-2 overflow-hidden bg-chrome border-r border-line",
+        "transition-[width] duration-200 ease-out motion-reduce:transition-none",
+        expanded ? "w-[11rem]" : "w-14"
+      )}
+    >
       {item("monitor")}
       {item("flash")}
       {item("modules")}

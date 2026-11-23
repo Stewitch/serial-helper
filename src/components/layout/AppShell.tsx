@@ -29,7 +29,7 @@ export function AppShell() {
   return (
     // Rows size to their content so the title bar can never overlap the page,
     // whatever the UI scale.
-    <div className="grid h-full grid-cols-[56px_minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] bg-base text-ink">
+    <div className="grid h-full grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] bg-base text-ink">
       <TitleBar />
       <Rail active={activePage} onNavigate={setActivePage} />
       <main className="flex flex-col min-w-0 min-h-0 overflow-hidden">

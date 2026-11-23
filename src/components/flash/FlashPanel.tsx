@@ -548,7 +548,7 @@ export function FlashPanel() {
   };
 
   return (
-    <div className="grid grid-cols-[minmax(300px,340px)_1fr] h-full min-h-0">
+    <div className="grid grid-cols-[minmax(22rem,25rem)_1fr] h-full min-h-0">
       {/* ---------------- Setup ---------------- */}
       <aside className="flex flex-col min-h-0 border-r border-line">
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-[18px] space-y-[18px]">
@@ -600,7 +600,7 @@ export function FlashPanel() {
                 }}
                 disabled={busy}
                 options={moduleOptions}
-                className="w-[176px]"
+                className="w-[12.5rem]"
               />
             </FieldRow>
             {toolsMissing && (
@@ -620,7 +620,7 @@ export function FlashPanel() {
                     onChange={(v) => (isAvr ? fs.setAvrChip(v) : fs.setStc({ stcChip: v }))}
                     disabled={busy}
                     options={chipOptions}
-                    className="w-[176px]"
+                    className="w-[12.5rem]"
                     mono
                   />
                 </FieldRow>
@@ -632,7 +632,7 @@ export function FlashPanel() {
                       onChange={fs.setAvrProgrammer}
                       disabled={busy}
                       options={AVR_PROGRAMMERS}
-                      className="w-[176px]"
+                      className="w-[12.5rem]"
                     />
                   </FieldRow>
                 )}
@@ -666,7 +666,7 @@ export function FlashPanel() {
                     { value: "rts:high", label: t("stcPinOff", { pin: "RTS", level: t("levelHigh") }) },
                   ]}
                   disabled={busy}
-                  className="w-[156px]"
+                  className="w-[11rem]"
                 />
               </FieldRow>
               <FieldRow label={t("stcOffTime")} indent>
@@ -676,7 +676,7 @@ export function FlashPanel() {
                   onChange={(v) => fs.setStc({ stcOffMs: Number(v) })}
                   options={[200, 300, 500, 800, 1000, 1500, 2000].map((ms) => ({ value: String(ms), label: `${ms} ms` }))}
                   disabled={busy}
-                  className="w-[156px]"
+                  className="w-[11rem]"
                   mono
                 />
               </FieldRow>
@@ -691,7 +691,7 @@ export function FlashPanel() {
                     { value: "stc89a", label: t("stcProtocolNew") },
                   ]}
                   disabled={busy}
-                  className="w-[156px]"
+                  className="w-[11rem]"
                 />
               </FieldRow>
               <FieldRow label={t("stcBaud")} indent>
@@ -701,7 +701,7 @@ export function FlashPanel() {
                   onChange={(v) => fs.setStc({ stcBaud: Number(v) })}
                   options={[9600, 19200, 38400, 57600, 115200].map((b) => ({ value: String(b), label: String(b) }))}
                   disabled={busy}
-                  className="w-[156px]"
+                  className="w-[11rem]"
                   mono
                 />
               </FieldRow>
@@ -716,10 +716,10 @@ export function FlashPanel() {
               {fs.dtrRtsEnabled && (
                 <>
                   <FieldRow label={t("rtsPin")} indent>
-                    <Select aria-label={t("rtsPin")} value={pinValue(fs.rtsFunc, fs.rtsLevel)} onChange={(v) => setPin("rts", v)} options={pinOptions} disabled={busy} className="w-[156px]" />
+                    <Select aria-label={t("rtsPin")} value={pinValue(fs.rtsFunc, fs.rtsLevel)} onChange={(v) => setPin("rts", v)} options={pinOptions} disabled={busy} className="w-[11rem]" />
                   </FieldRow>
                   <FieldRow label={t("dtrPin")} indent>
-                    <Select aria-label={t("dtrPin")} value={pinValue(fs.dtrFunc, fs.dtrLevel)} onChange={(v) => setPin("dtr", v)} options={pinOptions} disabled={busy} className="w-[156px]" />
+                    <Select aria-label={t("dtrPin")} value={pinValue(fs.dtrFunc, fs.dtrLevel)} onChange={(v) => setPin("dtr", v)} options={pinOptions} disabled={busy} className="w-[11rem]" />
                   </FieldRow>
                 </>
               )}

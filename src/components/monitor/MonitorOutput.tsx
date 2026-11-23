@@ -287,7 +287,11 @@ const OutputLine = memo(function OutputLine({
           <>
             <i
               aria-hidden
-              className={clsx("absolute left-2.5 top-1/2 h-0.5 -translate-y-1/2 rounded-[1px]", long ? "bg-accent" : "bg-line-strong")}
+              className={clsx(
+                "absolute left-2.5 top-1/2 h-0.5 -translate-y-1/2 rounded-[1px] bg-line-strong",
+                // The groove and the number share the cell: whenever the number shows, the groove hides.
+                long ? "hidden" : "group-hover:invisible"
+              )}
               style={{ width: gapWidth(gapMs) }}
             />
             <em className={clsx("not-italic", long ? "visible" : "invisible group-hover:visible")}>{formatGap(gapMs)}</em>

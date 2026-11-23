@@ -30,6 +30,8 @@
   "warning": "Warning",
   "success": "Success",
   "info": "Info",
+  "expandSidebar": "Expand sidebar",
+  "collapseSidebar": "Collapse sidebar",
   "minimize": "Minimize",
   "maximize": "Maximize",
   "restore": "Restore"

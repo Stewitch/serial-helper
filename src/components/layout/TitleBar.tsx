@@ -4,11 +4,16 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import clsx from "clsx";
 import { BrandMark } from "./BrandMark";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 const inTauri = isTauri();
 
-/** Window chrome only: app mark, name, drag area and window buttons. */
+/** Window chrome: app mark (toggles the sidebar), name, drag area and window buttons. */
 export function TitleBar() {
+  const { t } = useTranslation();
+  const expanded = useSettingsStore((s) => s.sidebarExpanded);
+  const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
+  const label = expanded ? t("common:collapseSidebar") : t("common:expandSidebar");
   return (
     <header
       data-tauri-drag-region
@@ -17,8 +22,17 @@ export function TitleBar() {
       }}
       className="col-span-2 flex items-center h-9 bg-chrome border-b border-line select-none"
     >
-      <div data-tauri-drag-region className="w-14 self-stretch grid place-items-center shrink-0">
-        <BrandMark size={18} />
+      <div className="w-14 self-stretch grid place-items-center shrink-0">
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-expanded={expanded}
+          aria-label={label}
+          title={label}
+          className="w-8 h-7 grid place-items-center rounded transition-colors hover:bg-raised active:scale-95"
+        >
+          <BrandMark size={18} />
+        </button>
       </div>
       <span data-tauri-drag-region className="text-sm font-semibold text-ink-2">
         Serial Helper

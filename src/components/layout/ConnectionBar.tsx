@@ -83,7 +83,7 @@ export function ConnectionBar() {
         options={baudOptions}
         disabled={locked}
         mono
-        className="w-[104px]"
+        className="w-[8.5rem]"
       />
       <Select
         aria-label={t("common:format")}
