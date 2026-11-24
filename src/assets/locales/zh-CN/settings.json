@@ -13,6 +13,8 @@
   "serialDefaultsDesc": "新建连接时的默认参数",
   "monitorSettings": "监视器",
   "uiScale": "界面字号",
+  "showSplash": "启动画面",
+  "showSplashDesc": "启动时显示约 1 秒的标志动画",
   "uiScaleDesc": "调整整个界面的文字大小",
   "timestampDesc": "在每条日志前显示时间戳",
   "autoScrollDesc": "自动滚动到最新输出",

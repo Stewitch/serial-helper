@@ -53,6 +53,9 @@ export function SettingsPage() {
           <FieldRow label={t("uiScale")} hint={t("uiScaleDesc")}>
             <Stepper value={s.uiScale} min={12} max={18} onChange={s.setUiScale} unit="px" label={t("uiScale")} />
           </FieldRow>
+          <FieldRow label={t("showSplash")} hint={t("showSplashDesc")}>
+            <Switch aria-label={t("showSplash")} checked={s.showSplash} onChange={s.setShowSplash} />
+          </FieldRow>
         </FieldGroup>
 
         <FieldGroup title={t("monitorSettings")}>

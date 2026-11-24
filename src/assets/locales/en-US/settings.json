@@ -13,6 +13,8 @@
   "serialDefaultsDesc": "Default parameters for new connections",
   "monitorSettings": "Monitor",
   "uiScale": "UI Font Size",
+  "showSplash": "Splash screen",
+  "showSplashDesc": "Show the logo animation for about a second at startup",
   "uiScaleDesc": "Adjust the font size of the entire application interface",
   "timestampDesc": "Show timestamp on each log line",
   "autoScrollDesc": "Automatically scroll to latest output",

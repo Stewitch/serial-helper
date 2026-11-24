@@ -20,6 +20,7 @@ interface SettingsStore {
   autoNavigateMonitorAfterFlash: boolean;
   monitorMaxLines: number;
   sidebarExpanded: boolean;
+  showSplash: boolean;
 
   setTheme: (theme: ThemePreset) => void;
   setLanguage: (lang: string) => void;
@@ -34,6 +35,7 @@ interface SettingsStore {
   setAutoResumeMonitor: (resume: boolean) => void;
   setAutoNavigateMonitorAfterFlash: (navigate: boolean) => void;
   toggleSidebar: () => void;
+  setShowSplash: (show: boolean) => void;
   applyTheme: () => void;
   applyUiScale: () => void;
   persist: () => void;
@@ -71,6 +73,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   autoNavigateMonitorAfterFlash: saved.autoNavigateMonitorAfterFlash ?? true,
   monitorMaxLines: saved.monitorMaxLines || 50000,
   sidebarExpanded: saved.sidebarExpanded ?? false,
+  showSplash: saved.showSplash ?? true,
 
   setTheme: (theme) => {
     set({ theme });
@@ -126,6 +129,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ sidebarExpanded: !get().sidebarExpanded });
     get().persist();
   },
+  setShowSplash: (showSplash) => {
+    set({ showSplash });
+    get().persist();
+  },
   applyTheme: () => {
     const { theme } = get();
     const resolved = theme === "system" ? getSystemTheme() : theme;
@@ -152,6 +159,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       autoNavigateMonitorAfterFlash: state.autoNavigateMonitorAfterFlash,
       monitorMaxLines: state.monitorMaxLines,
       sidebarExpanded: state.sidebarExpanded,
+      showSplash: state.showSplash,
     };
     localStorage.setItem("serial-helper-settings", JSON.stringify(toSave));
   },
