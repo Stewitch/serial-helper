@@ -1,6 +1,6 @@
 [package]
 name = "serial-helper"
-version = "0.3.0"
+version = "0.3.1"
 description = "Serial port monitor and firmware flashing tool"
 authors = ["Serial Helper Team"]
 edition = "2021"
