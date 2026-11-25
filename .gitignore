@@ -2,3 +2,7 @@ node_modules/
 dist/
 target/
 __pycache__/
+
+# Local-only files
+.claude/settings.local.json
+DESIGN.md
