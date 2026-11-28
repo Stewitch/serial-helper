@@ -153,6 +153,8 @@ npm run build:release
 npm version patch
 ```
 
+推送指向包含发布工作流的提交的 `vX.Y.Z` 标签后，GitHub Actions 会构建 Windows x64 的 MSI 和 NSIS 安装包，并上传到该标签对应的 GitHub Release。工作流合入默认分支后，已有的远程标签可在 **Actions → Windows Release → Run workflow** 中手动构建。
+
 </details>
 
 ## 技术栈
