@@ -1,2 +1,2 @@
-pub mod checker;
+pub mod managed;
 pub mod runner;

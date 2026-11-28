@@ -1,0 +1,95 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag (for example, v0.4.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' -or $env:RELEASE_TAG -cne "v$version") {
+            throw "Release tag '$env:RELEASE_TAG' must match the stable package version 'v$version'."
+          }
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($tauriVersion -cne $version) {
+            throw "Tauri version '$tauriVersion' does not match package version '$version'."
+          }
+
+      - name: Set up Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Windows x64 installers
+        run: npm run tauri -- build --target x86_64-pc-windows-msvc --bundles msi,nsis -- --locked
+
+      - name: Publish installers to GitHub Releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $bundle = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
+          $msi = @(Get-ChildItem "$bundle/msi/*.msi" -File)
+          $nsis = @(Get-ChildItem "$bundle/nsis/*-setup.exe" -File)
+          if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
+            throw "Expected exactly one MSI installer and one NSIS installer."
+          }
+          $uploadDir = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/release-assets" -Force
+          $assets = @(
+            (Join-Path $uploadDir.FullName "serial-helper-${env:RELEASE_TAG}-x64.msi")
+            (Join-Path $uploadDir.FullName "serial-helper-${env:RELEASE_TAG}-x64-setup.exe")
+          )
+          Copy-Item -LiteralPath $msi[0].FullName -Destination $assets[0]
+          Copy-Item -LiteralPath $nsis[0].FullName -Destination $assets[1]
+
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $existing = ($release | ConvertFrom-Json).assets.name
+            $missing = @($assets | Where-Object { (Split-Path $_ -Leaf) -cnotin $existing })
+            if ($missing.Count -gt 0) {
+              gh release upload $env:RELEASE_TAG @missing --repo $env:GITHUB_REPOSITORY
+              exit $LASTEXITCODE
+            }
+            Write-Output "Both installers are already attached to $env:RELEASE_TAG."
+          } else {
+            gh release create $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --verify-tag --generate-notes
+            exit $LASTEXITCODE
+          }

@@ -1,11 +1,14 @@
 //! The flashing modules the app knows about.
 
+use std::path::Path;
+
+use super::arduino_avr;
 use super::avr_chips;
 use super::chips;
 use super::module_trait::{ChipSelection, FlashModule, ModuleAvailability, ModuleChip, ModuleDescriptor};
-use super::orchestrator::{EnvStatus, HelpLink};
+use super::orchestrator::{EnvStatus, HelpLink, ToolSource};
 use super::stc89;
-use crate::tools::checker::ToolChecker;
+use crate::tools::managed::ManagedTool;
 
 pub const STM32_ISP: &str = "stm32-isp";
 pub const ARDUINO_AVR: &str = "arduino-avr";
@@ -24,9 +27,11 @@ fn link(label: &str, url: &str) -> HelpLink {
     HelpLink { label: label.into(), url: url.into() }
 }
 
-fn ready(version: Option<String>, messages: Vec<String>, references: Vec<HelpLink>) -> EnvStatus {
+fn ready(version: Option<String>, source: Option<ToolSource>, messages: Vec<String>, references: Vec<HelpLink>) -> EnvStatus {
     EnvStatus {
         ready: true,
+        can_install: false,
+        source,
         missing_tools: vec![],
         messages,
         version,
@@ -65,9 +70,10 @@ impl FlashModule for Stm32Isp {
         }
     }
 
-    fn check_environment(&self) -> EnvStatus {
+    fn check_environment(&self, _tools_dir: &Path) -> EnvStatus {
         ready(
             Some("built-in".into()),
+            None,
             vec!["Uses the app's own STM32 serial bootloader implementation. No external tool is needed.".into()],
             vec![link("STM32 USART bootloader protocol (AN3155)", "https://www.st.com/resource/en/application_note/an3155-usart-protocol-used-in-the-stm32-bootloader-stmicroelectronics.pdf")],
         )
@@ -103,16 +109,22 @@ impl FlashModule for ArduinoAvr {
         }
     }
 
-    fn check_environment(&self) -> EnvStatus {
+    fn managed_tool(&self) -> Option<ManagedTool> {
+        Some(ManagedTool::Avrdude)
+    }
+
+    fn check_environment(&self, tools_dir: &Path) -> EnvStatus {
         let refs = vec![
             link("AVRDUDE releases", "https://github.com/avrdudes/avrdude/releases"),
             link("AVRDUDE documentation", "https://avrdudes.github.io/avrdude/"),
         ];
-        if !ToolChecker::is_installed("avrdude") {
+        let Some((tool, version, source)) = arduino_avr::resolve_tool(tools_dir) else {
             return EnvStatus {
                 ready: false,
+                can_install: ManagedTool::supported(),
+                source: None,
                 missing_tools: vec!["avrdude".into()],
-                messages: vec!["avrdude was not found in PATH.".into()],
+                messages: vec!["No working AVRDUDE installation was found.".into()],
                 version: None,
                 install_hint: Some("Install avrdude and add the folder that contains avrdude.exe to PATH.".into()),
                 install_steps: vec![
@@ -122,10 +134,13 @@ impl FlashModule for ArduinoAvr {
                 ],
                 references: refs,
             };
-        }
-        let version = ToolChecker::get_version("avrdude", "-?")
-            .and_then(|out| out.lines().find(|l| l.contains("version")).map(|l| l.trim().to_string()));
-        ready(version, vec!["avrdude found in PATH.".into()], refs)
+        };
+        ready(
+            (!version.is_empty()).then_some(version),
+            Some(source),
+            vec![format!("Runs AVRDUDE from {}.", tool.executable.display())],
+            refs,
+        )
     }
 }
 
@@ -148,14 +163,20 @@ impl FlashModule for Stc89Stcgal {
         }
     }
 
-    fn check_environment(&self) -> EnvStatus {
+    fn managed_tool(&self) -> Option<ManagedTool> {
+        Some(ManagedTool::Stc89)
+    }
+
+    fn check_environment(&self, tools_dir: &Path) -> EnvStatus {
         let refs = vec![
             link("stcgal on GitHub", "https://github.com/grigorig/stcgal"),
             link("Python for Windows", "https://www.python.org/downloads/windows/"),
         ];
-        match stc89::check_tools() {
+        match stc89::check_tools(tools_dir) {
             stc89::ToolCheck::NoPython => EnvStatus {
                 ready: false,
+                can_install: ManagedTool::supported(),
+                source: None,
                 missing_tools: vec!["python".into(), "stcgal".into()],
                 messages: vec!["No working Python 3 was found (tried python, py -3, python3).".into()],
                 version: None,
@@ -163,24 +184,27 @@ impl FlashModule for Stc89Stcgal {
                 install_steps: vec![
                     "Install Python 3 from python.org and tick \"Add python.exe to PATH\".".into(),
                     "Restart Serial Helper.".into(),
-                    "Click \"Install stcgal\" here, or run `python -m pip install stcgal`.".into(),
+                    "Run `python -m pip install stcgal`.".into(),
                 ],
                 references: refs,
             },
-            stc89::ToolCheck::NoStcgal { python, detail } => EnvStatus {
+            stc89::ToolCheck::NoStcgal { detail } => EnvStatus {
                 ready: false,
+                can_install: ManagedTool::supported(),
+                source: None,
                 missing_tools: vec!["stcgal".into()],
-                messages: vec![format!("Python found ({}), but stcgal is not installed.", python.display()), detail],
+                messages: vec![detail],
                 version: None,
                 install_hint: Some("Install stcgal with pip.".into()),
                 install_steps: vec![
-                    "Click \"Install stcgal\" here, or run `python -m pip install stcgal` in a terminal.".into(),
+                    "Run `python -m pip install stcgal` in a terminal.".into(),
                     "Check again when it finishes.".into(),
                 ],
                 references: refs,
             },
-            stc89::ToolCheck::Ready { python, version } => ready(
+            stc89::ToolCheck::Ready { python, version, source } => ready(
                 Some(version),
+                Some(source),
                 vec![
                     format!("Runs stcgal with {}.", python.display()),
                     "Serial Helper cycles the board's power itself, so the off time and pin level can be set on the flash page.".into(),
@@ -210,9 +234,11 @@ impl FlashModule for Esp32Planned {
         }
     }
 
-    fn check_environment(&self) -> EnvStatus {
+    fn check_environment(&self, _tools_dir: &Path) -> EnvStatus {
         EnvStatus {
             ready: false,
+            can_install: false,
+            source: None,
             missing_tools: vec![],
             messages: vec!["ESP32 flashing is not implemented yet.".into()],
             version: None,

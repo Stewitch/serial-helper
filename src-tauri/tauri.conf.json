@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/main/crates/tauri-cli/schema.json",
   "productName": "Serial Helper",
-  "version": "0.3.2",
-  "identifier": "com.serial-helper.app",
+  "version": "0.4.0",
+  "identifier": "serial-helper",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -32,6 +32,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "serial-helper",
     "targets": "all",
     "icon": [
       "icons/32x32.png",

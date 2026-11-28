@@ -8,18 +8,13 @@ use tauri::{AppHandle, Emitter, State};
 use crate::commands::{avr_cmd, flash_cmd};
 use crate::error::AppError;
 use crate::firmware::{bin, hex};
-use crate::flash::module_trait::{ModuleAvailability, ModuleDescriptor};
+use crate::flash::module_trait::ModuleDescriptor;
 use crate::flash::orchestrator::EnvStatus;
 use crate::flash::registry;
 use crate::flash::stc89::{self, Stc89Options};
 use crate::state::AppState;
+use crate::tools::managed::{self, ManagedTool};
 use crate::tools::runner::Stream;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ModuleEnvUpdate {
-    pub module: ModuleDescriptor,
-    pub env: EnvStatus,
-}
 
 #[tauri::command]
 pub fn list_modules() -> Vec<ModuleDescriptor> {
@@ -27,23 +22,12 @@ pub fn list_modules() -> Vec<ModuleDescriptor> {
 }
 
 #[tauri::command]
-pub async fn check_module_env(module_id: String) -> Result<EnvStatus, AppError> {
+pub async fn check_module_env(app: AppHandle, module_id: String) -> Result<EnvStatus, AppError> {
     let module = registry::find(&module_id).ok_or_else(|| AppError::Generic(format!("Unknown module '{}'", module_id)))?;
-    tokio::task::spawn_blocking(move || module.check_environment())
+    let tools_dir = managed::tools_dir(&app)?;
+    tokio::task::spawn_blocking(move || module.check_environment(&tools_dir))
         .await
         .map_err(|e| AppError::Generic(format!("Environment check panicked: {}", e)))
-}
-
-/// Checks every module in the background and emits `module-env-update` for each.
-#[tauri::command]
-pub fn start_module_scan(app: AppHandle) {
-    std::thread::spawn(move || {
-        for module in registry::modules() {
-            let env = module.check_environment();
-            let _ = app.emit("module-env-update", ModuleEnvUpdate { module: module.descriptor(), env });
-        }
-        let _ = app.emit("module-scan-done", ());
-    });
 }
 
 #[derive(Clone, Serialize)]
@@ -52,22 +36,31 @@ struct InstallLine {
     line: String,
 }
 
-/// Installs a module's missing tools where the app can do it itself (pip packages).
 #[tauri::command]
 pub async fn install_module_tools(app: AppHandle, module_id: String) -> Result<EnvStatus, AppError> {
-    if module_id != registry::STC89 {
-        return Err(AppError::Generic(format!("Module '{}' cannot install its tools automatically", module_id)));
-    }
-    let app2 = app.clone();
-    let id = module_id.clone();
+    let module = registry::find(&module_id).ok_or_else(|| AppError::Generic(format!("Unknown module '{module_id}'")))?;
+    let tool = module.managed_tool().ok_or_else(|| AppError::Generic(format!("Module '{module_id}' has no installable tools")))?;
+    let tools_dir = managed::tools_dir(&app)?;
     tokio::task::spawn_blocking(move || {
-        stc89::install_stcgal(|line| {
-            let _ = app2.emit("module-install-output", InstallLine { module: id.clone(), line: line.to_string() });
-        })
+        let env = module.check_environment(&tools_dir);
+        if env.ready {
+            return Ok(env);
+        }
+        let validate = match tool {
+            ManagedTool::Avrdude => crate::flash::arduino_avr::validate_runtime,
+            ManagedTool::Stc89 => stc89::validate_runtime,
+        };
+        tool.install(&tools_dir, validate, |line| {
+            let _ = app.emit("module-install-output", InstallLine { module: module_id.clone(), line: line.to_string() });
+        })?;
+        let env = module.check_environment(&tools_dir);
+        if !env.ready {
+            return Err(AppError::Generic(env.messages.join("\n")));
+        }
+        Ok(env)
     })
     .await
-    .map_err(|e| AppError::Generic(format!("Install task panicked: {}", e)))??;
-    check_module_env(module_id).await
+    .map_err(|e| AppError::Generic(format!("Install task panicked: {}", e)))?
 }
 
 /* ---------------- Flashing ---------------- */
@@ -132,10 +125,6 @@ async fn flash_stc89(
     state.cancel_flag.store(false, Ordering::SeqCst);
     let cancel = state.cancel_flag.clone();
 
-    let module = registry::find(registry::STC89).expect("stc89 module registered");
-    if module.descriptor().availability != ModuleAvailability::Available {
-        return Err(AppError::Generic("STC89 module is not available".into()));
-    }
     let chip = stc89::chips()
         .into_iter()
         .find(|c| c.id == options.chip)
@@ -154,6 +143,22 @@ async fn flash_stc89(
     let image = stc89::flat_image(&firmware, chip.flash_kb as usize * 1024)?;
     emit(&app, "parsing", 2, &format!("Firmware: {} bytes for {}", image.len(), chip.name));
 
+    let tools_dir = managed::tools_dir(&app)?;
+    let python = match tokio::task::spawn_blocking(move || stc89::check_tools(&tools_dir))
+        .await
+        .map_err(|e| AppError::Generic(format!("STC89 environment check failed: {e}")))?
+    {
+        stc89::ToolCheck::Ready { python, .. } => python,
+        stc89::ToolCheck::NoStcgal { detail } => return Err(AppError::Generic(detail)),
+        stc89::ToolCheck::NoPython => return Err(AppError::ToolNotFound {
+            tool: "Python 3 and stcgal".into(),
+            install_cmd: "see the Modules page".into(),
+        }),
+    };
+    if cancel.load(Ordering::SeqCst) {
+        return Err(AppError::FlashCancelled);
+    }
+
     // The port must be free: the wrapper opens it itself.
     {
         let mgr = state.serial_manager.read();
@@ -167,6 +172,7 @@ async fn flash_stc89(
     let port = port_name.clone();
     let result = tokio::task::spawn_blocking(move || {
         stc89::flash(
+            &python,
             &port,
             &image,
             &options,

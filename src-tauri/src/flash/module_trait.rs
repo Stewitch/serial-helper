@@ -1,6 +1,9 @@
+use std::path::Path;
+
 use serde::Serialize;
 
 use super::orchestrator::EnvStatus;
+use crate::tools::managed::ManagedTool;
 
 /// A chip a module can flash, as the frontend needs it to draw the flash map.
 #[derive(Debug, Clone, Serialize)]
@@ -56,5 +59,9 @@ pub trait FlashModule: Send + Sync {
     fn descriptor(&self) -> ModuleDescriptor;
 
     /// Checks external tools. Runs commands, so call it off the UI thread.
-    fn check_environment(&self) -> EnvStatus;
+    fn check_environment(&self, tools_dir: &Path) -> EnvStatus;
+
+    fn managed_tool(&self) -> Option<ManagedTool> {
+        None
+    }
 }

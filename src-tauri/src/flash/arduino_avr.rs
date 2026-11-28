@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -7,10 +8,61 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::error::{AppError, AppResult};
-use crate::flash::orchestrator::{FlashProgress, FlashStage, FirmwareFormat};
+use crate::flash::orchestrator::{FlashProgress, FlashStage, FirmwareFormat, ToolSource};
+use crate::tools::managed::ManagedTool;
+use crate::tools::runner::{self, hidden_command};
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+pub struct Avrdude {
+    pub executable: PathBuf,
+    config: Option<PathBuf>,
+}
+
+impl Avrdude {
+    fn managed(runtime: &Path) -> Self {
+        Self {
+            executable: runtime.join("avrdude.exe"),
+            config: Some(runtime.join("avrdude.conf")),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut cmd = hidden_command(&self.executable);
+        if let Some(config) = &self.config {
+            cmd.arg("-C").arg(config).arg("-N");
+        }
+        cmd
+    }
+
+    fn probe(&self) -> Option<String> {
+        let (_, output) = runner::capture({
+            let mut cmd = self.command();
+            cmd.args(["-v", "-p", "?"]);
+            cmd
+        })?;
+        // AVRDUDE exits 1 after listing parts, including when the config could not be read.
+        if !output.lines().any(|line| line.trim_end().ends_with("Valid parts are:")) {
+            return None;
+        }
+        let version = output.lines().find(|line| line.to_ascii_lowercase().contains("avrdude version"));
+        Some(version.unwrap_or_default().trim().into())
+    }
+}
+
+pub fn validate_runtime(runtime: &Path) -> AppResult<()> {
+    Avrdude::managed(runtime).probe().map(|_| ()).ok_or_else(|| {
+        AppError::Generic("AVRDUDE could not load its configuration and list the supported chips".into())
+    })
+}
+
+pub fn resolve_tool(tools_dir: &Path) -> Option<(Avrdude, String, ToolSource)> {
+    let runtime = ManagedTool::Avrdude.path(tools_dir);
+    let managed = runtime.is_dir().then(|| (Avrdude::managed(&runtime), ToolSource::Managed));
+    let system = runner::path_candidates("avrdude")
+        .map(|executable| (Avrdude { executable, config: None }, ToolSource::System));
+    managed.into_iter().chain(system).find_map(|(tool, source)| {
+        tool.probe().map(|version| (tool, version, source))
+    })
+}
 
 pub struct AvrdudeConfig {
     pub programmer: String,
@@ -31,12 +83,13 @@ impl AvrdudeConfig {
 }
 
 pub struct AvrdudeFlasher {
+    tool: Avrdude,
     cancel_flag: Arc<AtomicBool>,
 }
 
 impl AvrdudeFlasher {
-    pub fn new(cancel_flag: Arc<AtomicBool>) -> Self {
-        Self { cancel_flag }
+    pub fn new(tool: Avrdude, cancel_flag: Arc<AtomicBool>) -> Self {
+        Self { tool, cancel_flag }
     }
 
     pub async fn flash(
@@ -74,7 +127,7 @@ impl AvrdudeFlasher {
     ) -> AppResult<()> {
         let mem_type = format!("flash:w:{}:i", firmware_path);
 
-        let mut cmd = make_hidden_command("avrdude");
+        let mut cmd = self.tool.command();
         cmd.arg("-c").arg(&config.programmer);
         cmd.arg("-p").arg(&config.part);
         cmd.arg("-P").arg(&config.port);
@@ -191,18 +244,6 @@ fn extension_for(format: &FirmwareFormat) -> &str {
         FirmwareFormat::Bin => ".bin",
         _ => ".hex",
     }
-}
-
-#[cfg(target_os = "windows")]
-fn make_hidden_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
-    cmd.creation_flags(0x08000000);
-    cmd
-}
-
-#[cfg(not(target_os = "windows"))]
-fn make_hidden_command(program: &str) -> Command {
-    Command::new(program)
 }
 
 type AvrMessage = (String, String);

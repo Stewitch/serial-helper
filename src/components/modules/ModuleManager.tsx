@@ -1,21 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import * as Dialog from "@radix-ui/react-dialog";
+import { Download, LoaderCircle } from "lucide-react";
 import { useModulesStore, type ModuleInfo, type EnvStatus } from "@/stores/modulesStore";
 import { Button } from "@/components/ui";
 
-interface ModuleEnvUpdate {
-  module: ModuleInfo;
-  env: EnvStatus;
-}
-
 type Tone = "ok" | "warn" | "muted";
-
-/** Modules whose missing tools the app can install itself. */
-const INSTALLABLE = new Set(["stc89-stcgal"]);
 
 function moduleTone(module: ModuleInfo, env: EnvStatus | undefined): Tone {
   if (module.availability === "planned") return "muted";
@@ -28,61 +19,24 @@ export function ModuleManager() {
   const modules = useModulesStore((s) => s.modules);
   const envByModule = useModulesStore((s) => s.envByModule);
   const refreshing = useModulesStore((s) => s.refreshing);
-  const lastLoadedAt = useModulesStore((s) => s.lastLoadedAt);
-  const setModulesData = useModulesStore((s) => s.setModulesData);
-  const updateModuleEnv = useModulesStore((s) => s.updateModuleEnv);
-  const setRefreshing = useModulesStore((s) => s.setRefreshing);
-  const setEnv = useModulesStore((s) => s.setEnv);
-  const [selected, setSelected] = useState<ModuleInfo | null>(null);
-  const [installing, setInstalling] = useState<string | null>(null);
-  const [installLog, setInstallLog] = useState<string[]>([]);
-  const [installError, setInstallError] = useState<string | null>(null);
+  const scanError = useModulesStore((s) => s.scanError);
+  const refreshModules = useModulesStore((s) => s.refreshModules);
+  const installTools = useModulesStore((s) => s.installTools);
+  const selectedId = useModulesStore((s) => s.setupModuleId);
+  const setSelectedId = useModulesStore((s) => s.setSetupModuleId);
+  const installation = useModulesStore((s) => selectedId ? s.installByModule[selectedId] : undefined);
+  const selected = modules.find((module) => module.id === selectedId);
+  const selectedEnv = selectedId ? envByModule[selectedId] : undefined;
+  const installLog = installation?.log;
   const installLogRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
     installLogRef.current?.scrollTo({ top: installLogRef.current.scrollHeight });
   }, [installLog]);
 
-  const installTools = async (module: ModuleInfo) => {
-    setInstalling(module.id);
-    setInstallLog([]);
-    setInstallError(null);
-    const unlisten = await listen<{ module: string; line: string }>("module-install-output", (e) => {
-      if (e.payload.module === module.id) setInstallLog((prev) => [...prev.slice(-300), e.payload.line]);
-    });
-    try {
-      const env = await invoke<EnvStatus>("install_module_tools", { moduleId: module.id });
-      setEnv(module.id, env);
-    } catch (e) {
-      setInstallError(typeof e === "string" ? e : String(e));
-    } finally {
-      unlisten();
-      setInstalling(null);
-    }
-  };
-
-  const refreshModules = async () => {
-    setRefreshing(true);
-    try {
-      const list = await invoke<ModuleInfo[]>("list_modules");
-      setModulesData(list, {});
-      await invoke("start_module_scan");
-    } catch {
-      setModulesData([], {});
-      setRefreshing(false);
-    }
-  };
-
   useEffect(() => {
-    const unlisteners: UnlistenFn[] = [];
-    void listen<ModuleEnvUpdate>("module-env-update", (event) => {
-      updateModuleEnv(event.payload.module, event.payload.env);
-    }).then((fn) => unlisteners.push(fn));
-    void listen("module-scan-done", () => setRefreshing(false)).then((fn) => unlisteners.push(fn));
-    if (!lastLoadedAt) void refreshModules();
-    return () => unlisteners.forEach((fn) => fn());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!useModulesStore.getState().scanned) void refreshModules();
+  }, [refreshModules]);
 
   const statusText = (module: ModuleInfo, env: EnvStatus | undefined) => {
     if (module.availability === "planned") return t("moduleStatusPlanned");
@@ -90,8 +44,6 @@ export function ModuleManager() {
     if (env?.missing_tools?.length) return t("moduleMissing", { tools: env.missing_tools.join("、") });
     return refreshing ? t("moduleChecking") : t("moduleStatusUnknown");
   };
-
-  const selectedEnv = selected ? envByModule[selected.id] : undefined;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -113,6 +65,7 @@ export function ModuleManager() {
           </Button>
         </div>
         <p className="m-0 mb-5 text-sm text-ink-3">{t("moduleIntro")}</p>
+        {scanError && <p role="alert" className="mb-3 text-sm text-err">{t("moduleCheckFailed", { error: scanError })}</p>}
 
         {modules.length === 0 ? (
           <p className="py-6 text-sm text-ink-3">{refreshing ? t("moduleChecking") : t("moduleEmpty")}</p>
@@ -148,7 +101,7 @@ export function ModuleManager() {
                       <span className="text-ink-3">　{t("moduleCounts", { chips: module.chips.length, formats: module.formats.length })}</span>
                     </p>
                   </div>
-                  <Button size="sm" variant={tone === "warn" ? "outline" : "ghost"} onClick={() => setSelected(module)}>
+                  <Button size="sm" variant={tone === "warn" ? "outline" : "ghost"} onClick={() => setSelectedId(module.id)}>
                     {tone === "warn" ? t("moduleSetup") : t("details")}
                   </Button>
                 </li>
@@ -158,7 +111,7 @@ export function ModuleManager() {
         )}
       </div>
 
-      <Dialog.Root open={selected !== null} onOpenChange={(o) => !o && setSelected(null)}>
+      <Dialog.Root open={Boolean(selected)} onOpenChange={(open) => !open && setSelectedId(null)}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/45" />
           <Dialog.Content className="fixed left-1/2 top-1/2 w-[min(600px,calc(100vw-48px))] max-h-[calc(100vh-96px)] overflow-y-auto -translate-x-1/2 -translate-y-1/2 rounded-lg bg-raised text-ink shadow-pop focus:outline-none">
@@ -168,7 +121,31 @@ export function ModuleManager() {
                   <Dialog.Title className="m-0 text-lg font-semibold">{selected.name}</Dialog.Title>
                   <Dialog.Description className="m-0 mt-1 text-sm text-ink-2">{selected.description}</Dialog.Description>
                   <p className="m-0 mt-2 text-xs text-ink-3">{statusText(selected, selectedEnv)}</p>
+                  {selectedEnv?.source && (
+                    <p className="m-0 mt-1 text-xs text-ink-3">
+                      {t(selectedEnv.source === "managed" ? "moduleSourceManaged" : "moduleSourceSystem")}
+                    </p>
+                  )}
                 </div>
+
+                {(selectedEnv?.can_install || installation?.running || installation?.error) && (
+                  <section className="space-y-2">
+                    {(selectedEnv?.can_install || installation?.running) && (
+                      <Button
+                        variant="primary"
+                        size="md"
+                        onClick={() => void installTools(selected.id)}
+                        disabled={installation?.running}
+                        icon={installation?.running
+                          ? <LoaderCircle size={14} className="animate-spin" aria-hidden />
+                          : <Download size={14} aria-hidden />}
+                      >
+                        {installation?.running ? t("moduleInstalling") : installation?.error ? t("moduleRetryInstall") : t("moduleInstallTools")}
+                      </Button>
+                    )}
+                    {installation?.error && <p role="alert" className="m-0 text-sm text-err select-text">{t("moduleInstallFailed", { error: installation.error })}</p>}
+                  </section>
+                )}
 
                 {(selectedEnv?.install_hint || selectedEnv?.install_steps?.length) && !selectedEnv?.ready ? (
                   <section>
@@ -184,16 +161,7 @@ export function ModuleManager() {
                   </section>
                 ) : null}
 
-                {selectedEnv && !selectedEnv.ready && INSTALLABLE.has(selected.id) && selectedEnv.missing_tools.every((tool) => tool !== "python") && (
-                  <section className="space-y-2">
-                    <Button variant="primary" size="md" onClick={() => void installTools(selected)} disabled={installing !== null}>
-                      {installing === selected.id ? t("moduleInstalling") : t("moduleInstallTools")}
-                    </Button>
-                    {installError && <p className="m-0 text-sm text-err select-text">{t("moduleInstallFailed", { error: installError })}</p>}
-                  </section>
-                )}
-
-                {installLog.length > 0 && (
+                {installLog && installLog.length > 0 && (
                   <section>
                     <h3 className="m-0 mb-2 text-xs font-semibold text-ink-3">{t("moduleInstallLog")}</h3>
                     <pre

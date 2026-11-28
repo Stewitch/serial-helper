@@ -16,9 +16,18 @@ pub enum FirmwareFormat {
     Uf2,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolSource {
+    System,
+    Managed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvStatus {
     pub ready: bool,
+    pub can_install: bool,
+    pub source: Option<ToolSource>,
     pub missing_tools: Vec<String>,
     pub messages: Vec<String>,
     pub version: Option<String>,

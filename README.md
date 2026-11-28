@@ -67,13 +67,13 @@
 
 ## 支持的芯片
 
-每种烧录方式是一个模块。依赖外部工具的模块会在「模块」页检查环境，并给出安装步骤。
+每种烧录方式是一个模块。「模块」页会检查依赖并复用可用的工具。在 Windows 10 / 11 x64 上，AVR 或 STC89 缺少依赖时，可以点击「安装依赖」。应用从上游下载并校验固定版本，安装到当前用户的应用数据目录，无需修改系统 `PATH` 或重启。
 
 | 模块 | 芯片 | 依赖 | 状态 |
 | :-- | :-- | :-- | :-- |
 | **STM32 串口 ISP** | F0 / F1 / F2 / F3 / F4 / F7 / G0 / G4 / H7 / L0 / L4 / WB，共 42 个型号，自动识别 | 无，内置 AN3155 协议实现 | ✅ 可用 |
 | **Arduino AVR** | ATmega328P、ATmega2560、ATmega32U4、ATtiny85 等 12 个型号 | [avrdude](https://github.com/avrdudes/avrdude/releases) | ✅ 可用 |
-| **STC89 / STC90** | STC89C51RC、STC89C52RC、STC89C516RD+、STC90C52RC 等 9 个型号 | Python 3 + [stcgal](https://github.com/grigorig/stcgal)，可在应用内一键安装 | ✅ 可用 |
+| **STC89 / STC90** | STC89C51RC、STC89C52RC、STC89C516RD+、STC90C52RC 等 9 个型号 | Python 3 + [stcgal](https://github.com/grigorig/stcgal) | ✅ 可用 |
 | **ESP32** | ESP32 系列 | Python 3 + esptool | 🚧 计划中 |
 
 > [!TIP]
@@ -152,6 +152,8 @@ npm run build:release
 ```powershell
 npm version patch
 ```
+
+推送指向包含发布工作流的提交的 `vX.Y.Z` 标签后，GitHub Actions 会构建 Windows x64 的 MSI 和 NSIS 安装包，并上传到该标签对应的 GitHub Release。工作流合入默认分支后，已有的远程标签可在 **Actions → Windows Release → Run workflow** 中手动构建。
 
 </details>
 
