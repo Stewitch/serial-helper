@@ -1,11 +1,13 @@
 //! Runs an external tool, streams its output line by line, and kills it on cancel.
 
+use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::{AppError, AppResult};
 
@@ -16,7 +18,7 @@ pub enum Stream {
 }
 
 /// A command with the console window hidden on Windows.
-pub fn hidden_command(program: &str) -> Command {
+pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
@@ -26,6 +28,18 @@ pub fn hidden_command(program: &str) -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// Resolve on PATH explicitly so probing and flashing can use the same executable.
+pub fn path_candidates(name: &str) -> impl Iterator<Item = PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let name = if cfg!(windows) { format!("{name}.exe") } else { name.into() };
+    std::env::split_paths(&path)
+        .filter(|directory| directory.is_absolute())
+        .map(move |directory| directory.join(&name))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 fn pump<R: Read + Send + 'static>(reader: R, stream: Stream, tx: mpsc::Sender<(Stream, String)>) {
@@ -103,17 +117,34 @@ pub fn run_streaming(
     }
 }
 
-/// Runs a short command and returns its combined output, or None if it could not start.
+/// Probe a tool without allowing a broken executable to stall the environment check.
 pub fn capture(mut cmd: Command) -> Option<(ExitStatus, String)> {
-    cmd.stdin(Stdio::null());
-    let out = cmd.output().ok()?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let err = String::from_utf8_lossy(&out.stderr);
-    if !err.trim().is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    let (tx, rx) = mpsc::channel();
+    pump(child.stdout.take().expect("stdout is piped"), Stream::Stdout, tx.clone());
+    pump(child.stderr.take().expect("stderr is piped"), Stream::Stderr, tx);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut text = String::new();
+    let mut output_closed = false;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        if output_closed {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some((status, text.trim().into()));
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(20)));
+            continue;
         }
-        text.push_str(&err);
+        match rx.recv_timeout(remaining) {
+            Ok((_, line)) if text.len() + line.len() < 1024 * 1024 => {
+                text.push_str(&line);
+                text.push('\n');
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => output_closed = true,
+            _ => break,
+        }
     }
-    Some((out.status, text.trim().to_string()))
+    let _ = child.kill();
+    let _ = child.wait();
+    None
 }

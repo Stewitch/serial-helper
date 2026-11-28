@@ -67,13 +67,13 @@ A typical microcontroller loop looks like this: watch the log in a serial termin
 
 ## Supported chips
 
-Each flashing method is a module. Modules that rely on an external tool check for it on the Modules page and show install steps.
+Each flashing method is a module. The Modules page checks for dependencies and reuses working tools. On 64-bit x86 Windows 10 / 11, click **Install dependencies** when AVR or STC89 needs tools. Serial Helper downloads and verifies pinned versions from upstream and installs them in your local app data folder. Installing requires neither a system `PATH` change nor an app restart.
 
 | Module | Chips | Requires | Status |
 | :-- | :-- | :-- | :-- |
 | **STM32 Serial ISP** | F0 / F1 / F2 / F3 / F4 / F7 / G0 / G4 / H7 / L0 / L4 / WB, 42 parts, auto-detected | Nothing; built-in AN3155 implementation | ✅ Available |
 | **Arduino AVR** | 12 parts including ATmega328P, ATmega2560, ATmega32U4, ATtiny85 | [avrdude](https://github.com/avrdudes/avrdude/releases) | ✅ Available |
-| **STC89 / STC90** | 9 parts including STC89C51RC, STC89C52RC, STC89C516RD+, STC90C52RC | Python 3 + [stcgal](https://github.com/grigorig/stcgal), installable from inside the app | ✅ Available |
+| **STC89 / STC90** | 9 parts including STC89C51RC, STC89C52RC, STC89C516RD+, STC90C52RC | Python 3 + [stcgal](https://github.com/grigorig/stcgal) | ✅ Available |
 | **ESP32** | ESP32 family | Python 3 + esptool | 🚧 Planned |
 
 > [!TIP]

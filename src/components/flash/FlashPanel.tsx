@@ -9,7 +9,7 @@ import { useSerialStore } from "@/stores/serialStore";
 import { useAppStore } from "@/stores/appStore";
 import { useFlashStore, type FirmwareInfo } from "@/stores/flashStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useModulesStore, type EnvStatus, type ModuleChip } from "@/stores/modulesStore";
+import { useModulesStore, type ModuleChip } from "@/stores/modulesStore";
 import { monitorBuffer } from "@/lib/monitorBuffer";
 import { Button, FieldGroup, FieldRow, Select, Switch } from "@/components/ui";
 import type { SerialConfig } from "@/types/serial";
@@ -104,13 +104,20 @@ export function FlashPanel() {
   const modules = useModulesStore((s) => s.modules);
   const ensureModules = useModulesStore((s) => s.ensureModules);
   const moduleEnv = useModulesStore((s) => s.envByModule[fs.flashModule]);
-  const setModuleEnv = useModulesStore((s) => s.setEnv);
+  const checkEnvironment = useModulesStore((s) => s.checkEnvironment);
+  const setSetupModuleId = useModulesStore((s) => s.setSetupModuleId);
+  const installingTools = useModulesStore((s) => s.installByModule[fs.flashModule]?.running);
   const module = modules.find((m) => m.id === fs.flashModule);
   const kind: FlowKind = fs.flashModule === "arduino-avr" ? "avr" : fs.flashModule === "stc89-stcgal" ? "stc89" : "stm32";
   const isAvr = kind === "avr";
   const isStc = kind === "stc89";
   const manualChip = kind !== "stm32";
   const firmware = fs.firmware;
+  const [environmentError, setEnvironmentError] = useState<string | null>(null);
+  const [checkingBeforeFlash, setCheckingBeforeFlash] = useState(false);
+  const preflight = useRef<AbortController | null>(null);
+
+  useEffect(() => () => preflight.current?.abort(), []);
 
   useEffect(() => {
     void ensureModules().catch(() => undefined);
@@ -118,17 +125,16 @@ export function FlashPanel() {
 
   // Check the selected module's tools so a missing tool shows before flashing.
   useEffect(() => {
+    setEnvironmentError(null);
     if (!isTauri() || !module || module.required_tools.length === 0) return;
     let cancelled = false;
-    void invoke<EnvStatus>("check_module_env", { moduleId: module.id })
-      .then((env) => {
-        if (!cancelled) setModuleEnv(module.id, env);
-      })
-      .catch(() => undefined);
+    void checkEnvironment(module.id).catch((error) => {
+      if (!cancelled) setEnvironmentError(extractError(error));
+    });
     return () => {
       cancelled = true;
     };
-  }, [module, setModuleEnv]);
+  }, [module, checkEnvironment]);
 
   const selectedChipId = isAvr ? fs.avrChip : isStc ? fs.stcChip : null;
   const manualChipInfo: ModuleChip | undefined = selectedChipId ? module?.chips.find((c) => c.id === selectedChipId) : undefined;
@@ -396,39 +402,59 @@ export function FlashPanel() {
     [addLog, isAvr, kind, releasePort, resumeMonitor, setState]
   );
 
-  const startFlash = () => {
-    if (!fs.firmwarePath || !portName || !firmware) return;
-    void run(
-      "flash",
-      () =>
-        invoke("module_flash", {
-          firmwarePath: fs.firmwarePath,
-          portName,
-          request: isAvr
-            ? {
-                module: "arduino-avr",
-                options: { programmer: fs.avrProgrammer, chip: fs.avrChip, verify: fs.verify, runAfter: fs.runAfter },
-              }
-            : isStc
+  const startFlash = async () => {
+    if (!canFlash || preflight.current || !fs.firmwarePath || !portName) return;
+    const request = new AbortController();
+    preflight.current = request;
+    try {
+      if (module && module.required_tools.length > 0) {
+        setCheckingBeforeFlash(true);
+        const env = await checkEnvironment(module.id);
+        const current = useFlashStore.getState();
+        if (request.signal.aborted || !env.ready ||
+            current.flashModule !== module.id || current.firmwarePath !== fs.firmwarePath ||
+            useSerialStore.getState().config.port_name !== portName) return;
+        setCheckingBeforeFlash(false);
+      }
+      await run(
+        "flash",
+        () =>
+          invoke("module_flash", {
+            firmwarePath: fs.firmwarePath,
+            portName,
+            request: isAvr
               ? {
-                  module: "stc89-stcgal",
-                  options: {
-                    chip: fs.stcChip,
-                    powerPin: fs.stcPowerPin,
-                    offLevel: fs.stcOffLevel,
-                    offMs: fs.stcOffMs,
-                    protocol: fs.stcProtocol,
-                    transferBaud: fs.stcBaud,
-                  },
+                  module: "arduino-avr",
+                  options: { programmer: fs.avrProgrammer, chip: fs.avrChip, verify: fs.verify, runAfter: fs.runAfter },
                 }
-              : {
-                  module: "stm32-isp",
-                  baudRate,
-                  options: { verify: fs.verify, runAfter: fs.runAfter, autoReset: fs.dtrRtsEnabled, dtrRts: connectOptions.dtrRts },
-                },
-        }),
-      buildSteps(kind, fs.verify, fs.runAfter)
-    );
+              : isStc
+                ? {
+                    module: "stc89-stcgal",
+                    options: {
+                      chip: fs.stcChip,
+                      powerPin: fs.stcPowerPin,
+                      offLevel: fs.stcOffLevel,
+                      offMs: fs.stcOffMs,
+                      protocol: fs.stcProtocol,
+                      transferBaud: fs.stcBaud,
+                    },
+                  }
+                : {
+                    module: "stm32-isp",
+                    baudRate,
+                    options: { verify: fs.verify, runAfter: fs.runAfter, autoReset: fs.dtrRtsEnabled, dtrRts: connectOptions.dtrRts },
+                  },
+          }),
+        buildSteps(kind, fs.verify, fs.runAfter)
+      );
+    } catch (error) {
+      if (!request.signal.aborted && useFlashStore.getState().flashModule === fs.flashModule) {
+        setEnvironmentError(extractError(error));
+      }
+    } finally {
+      preflight.current = null;
+      if (!request.signal.aborted) setCheckingBeforeFlash(false);
+    }
   };
 
   const detectChip = () => {
@@ -515,7 +541,8 @@ export function FlashPanel() {
   })();
 
   const toolsMissing = Boolean(moduleEnv && !moduleEnv.ready && module && module.required_tools.length > 0);
-  const canFlash = Boolean(fs.firmwarePath && firmware && portName && !busy && (!manualChip || manualChipInfo));
+  const toolsReady = !manualChip || (moduleEnv?.ready && !environmentError && !installingTools && !checkingBeforeFlash);
+  const canFlash = Boolean(fs.firmwarePath && firmware && portName && !busy && toolsReady && (!manualChip || manualChipInfo));
   const chip = chipInfo?.chip_match;
   const moduleLabels: Record<string, string> = {
     "stm32-isp": t("moduleStm32Isp"),
@@ -603,11 +630,16 @@ export function FlashPanel() {
                 className="w-[12.5rem]"
               />
             </FieldRow>
-            {toolsMissing && (
+            {(toolsMissing || environmentError) && (
               <div className="flex items-center gap-2 rounded border border-warn/40 bg-warn/10 px-2.5 py-1.5 text-xs text-ink-2">
-                <span className="flex-1">{t("moduleToolsMissing", { tools: moduleEnv!.missing_tools.join(", ") })}</span>
-                <Button size="sm" variant="ghost" onClick={() => setActivePage("modules")}>
-                  {t("moduleToolsOpen")}
+                <span className="flex-1">{environmentError
+                  ? t("moduleToolsCheckFailed", { error: environmentError })
+                  : t("moduleToolsMissing", { tools: moduleEnv?.missing_tools.join(", ") })}</span>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  setSetupModuleId(fs.flashModule);
+                  setActivePage("modules");
+                }}>
+                  {t(moduleEnv?.can_install ? "moduleToolsOpen" : "moduleToolsDetails")}
                 </Button>
               </div>
             )}
@@ -770,12 +802,16 @@ export function FlashPanel() {
               {t("cancelFlash")}
             </Button>
           ) : (
-            <Button variant="primary" size="md" className="w-full" onClick={startFlash} disabled={!canFlash}>
+            <Button variant="primary" size="md" className="w-full" onClick={() => void startFlash()} disabled={!canFlash}>
               {t("startFlash")}
             </Button>
           )}
-          {!busy && !canFlash && (
-            <p className="mt-2 text-xs text-ink-3 text-center">{!firmware ? t("needFirmware") : t("needPort")}</p>
+          {!busy && ((!firmware || !portName) || (!toolsMissing && !environmentError && !canFlash)) && (
+            <p className="mt-2 text-xs text-ink-3 text-center">
+              {!firmware ? t("needFirmware") : !portName ? t("needPort") : !toolsReady
+                ? t(installingTools ? "moduleToolsInstalling" : "moduleToolsChecking")
+                : t("selectChip")}
+            </p>
           )}
         </div>
       </aside>

@@ -1,6 +1,7 @@
 //! STC89/STC90 flashing through stcgal, driven by `stc89_flash.py`.
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -8,8 +9,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::module_trait::ModuleChip;
+use super::orchestrator::ToolSource;
 use crate::error::{AppError, AppResult};
 use crate::firmware::FirmwareData;
+use crate::tools::managed::ManagedTool;
 use crate::tools::runner::{self, hidden_command, Stream};
 
 const SCRIPT: &str = include_str!("stc89_flash.py");
@@ -101,80 +104,91 @@ impl Stc89Options {
 
 /* ---------------- Python discovery ---------------- */
 
-/// A way to start Python 3: program plus leading arguments.
 #[derive(Debug, Clone)]
 pub struct Python {
-    pub program: String,
-    pub args: Vec<String>,
+    executable: PathBuf,
 }
 
 impl Python {
     pub fn command(&self) -> Command {
-        let mut cmd = hidden_command(&self.program);
-        cmd.args(&self.args);
-        // Isolated mode: ignore PYTHON* variables, the user site's cwd and script dir imports.
-        cmd.arg("-I");
-        cmd.env("PYTHONIOENCODING", "utf-8");
+        let mut cmd = hidden_command(&self.executable);
+        cmd.args(["-I", "-X", "utf8"]);
         cmd
     }
 
     pub fn display(&self) -> String {
-        std::iter::once(self.program.as_str())
-            .chain(self.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ")
+        self.executable.display().to_string()
     }
 }
 
-/// Finds a working Python 3. The Microsoft Store `python.exe` alias fails this check.
-pub fn find_python() -> Option<Python> {
-    let candidates: [(&str, &[&str]); 3] = [("python", &[]), ("py", &["-3"]), ("python3", &[])];
-    candidates.iter().find_map(|(program, args)| {
-        let py = Python {
-            program: (*program).into(),
-            args: args.iter().map(|s| (*s).into()).collect(),
-        };
-        let mut cmd = py.command();
-        cmd.args(["-c", "import sys; print(sys.version_info[0])"]);
-        match runner::capture(cmd) {
-            Some((status, out)) if status.success() && out.trim() == "3" => Some(py),
-            _ => None,
-        }
+fn system_pythons() -> impl Iterator<Item = Python> {
+    ["python", "py", "python3"].into_iter().flat_map(|name| {
+        runner::path_candidates(name).filter_map(move |candidate| {
+            // A Store placeholder can open the Store while checking a clean machine.
+            #[cfg(windows)]
+            if candidate.parent().and_then(Path::file_name).is_some_and(|dir| dir.eq_ignore_ascii_case("WindowsApps")) {
+                return None;
+            }
+            let mut cmd = hidden_command(&candidate);
+            if name == "py" {
+                cmd.arg("-3");
+            }
+            cmd.args(["-I", "-X", "utf8", "-c", "import sys; print(sys.executable) if sys.version_info.major == 3 else sys.exit(1)"]);
+            let (status, output) = runner::capture(cmd)?;
+            let executable = PathBuf::from(output.lines().find(|line| Path::new(line).is_absolute())?);
+            (status.success() && executable.is_file()).then_some(Python { executable })
+        })
     })
 }
 
-/// Writes the wrapper script to a private temp folder and returns its path.
-fn script_path() -> AppResult<PathBuf> {
-    let dir = std::env::temp_dir().join("serial-helper-stc89");
-    std::fs::create_dir_all(&dir).map_err(|e| AppError::Generic(format!("Cannot create {}: {}", dir.display(), e)))?;
-    let path = dir.join("stc89_flash.py");
-    let current = std::fs::read_to_string(&path).ok();
-    if current.as_deref() != Some(SCRIPT) {
-        std::fs::write(&path, SCRIPT).map_err(|e| AppError::Generic(format!("Cannot write {}: {}", path.display(), e)))?;
-    }
-    Ok(path)
+fn script_file() -> AppResult<tempfile::NamedTempFile> {
+    let mut file = tempfile::Builder::new().prefix("serial-helper-stc89-").suffix(".py").tempfile()
+        .map_err(|e| AppError::Generic(format!("Cannot create STC89 script: {e}")))?;
+    file.write_all(SCRIPT.as_bytes())
+        .map_err(|e| AppError::Generic(format!("Cannot write STC89 script: {e}")))?;
+    Ok(file)
 }
 
 pub enum ToolCheck {
     NoPython,
-    NoStcgal { python: Python, detail: String },
-    Ready { python: Python, version: String },
+    NoStcgal { detail: String },
+    Ready { python: Python, version: String, source: ToolSource },
 }
 
-pub fn check_tools() -> ToolCheck {
-    let Some(python) = find_python() else {
-        return ToolCheck::NoPython;
-    };
-    let script = match script_path() {
-        Ok(p) => p,
-        Err(e) => return ToolCheck::NoStcgal { python, detail: e.to_string() },
-    };
+fn probe(python: &Python) -> AppResult<String> {
+    let script = script_file()?;
     let mut cmd = python.command();
-    cmd.arg(&script).args(["--port", "-", "--check"]);
+    cmd.arg(script.path()).args(["--port", "-", "--check"]);
     match runner::capture(cmd) {
-        Some((status, out)) if status.success() => ToolCheck::Ready { python, version: out },
-        Some((_, out)) => ToolCheck::NoStcgal { python, detail: strip_events(&out) },
-        None => ToolCheck::NoStcgal { python, detail: "Python could not be started".into() },
+        Some((status, out)) if status.success() => Ok(out),
+        Some((_, out)) => Err(AppError::Generic(strip_events(&out))),
+        None => Err(AppError::Generic("Python could not be started or did not respond".into())),
+    }
+}
+
+fn managed_python(runtime: &Path) -> Python {
+    Python { executable: runtime.join("python.exe") }
+}
+
+pub fn validate_runtime(runtime: &Path) -> AppResult<()> {
+    probe(&managed_python(runtime)).map(|_| ())
+}
+
+pub fn check_tools(tools_dir: &Path) -> ToolCheck {
+    let managed = ManagedTool::Stc89.path(tools_dir);
+    let mut first_error = None;
+    let local = managed.is_dir().then(|| (managed_python(&managed), ToolSource::Managed));
+    for (python, source) in local.into_iter().chain(system_pythons().map(|python| (python, ToolSource::System))) {
+        match probe(&python) {
+            Ok(version) => return ToolCheck::Ready { python, version, source },
+            Err(error) => {
+                first_error.get_or_insert_with(|| format!("{}: {error}", python.display()));
+            }
+        }
+    }
+    match first_error {
+        Some(detail) => ToolCheck::NoStcgal { detail },
+        None => ToolCheck::NoPython,
     }
 }
 
@@ -187,23 +201,6 @@ fn strip_events(text: &str) -> String {
         .filter(|l| !l.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Runs `python -m pip install --upgrade stcgal`, streaming its output.
-pub fn install_stcgal(on_line: impl FnMut(&str)) -> AppResult<()> {
-    let python = find_python().ok_or_else(|| AppError::ToolNotFound {
-        tool: "Python 3".into(),
-        install_cmd: "https://www.python.org/downloads/windows/".into(),
-    })?;
-    let mut on_line = on_line;
-    let mut cmd = python.command();
-    cmd.args(["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", "stcgal"]);
-    let status = runner::run_streaming(cmd, "pip", None, |_, line| on_line(line))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(AppError::Generic(format!("pip exited with code {:?}", status.code())))
-    }
 }
 
 /* ---------------- Flashing ---------------- */
@@ -246,6 +243,7 @@ pub fn flat_image(firmware: &FirmwareData, max_size: usize) -> AppResult<Vec<u8>
 /// Runs the wrapper and calls `on_event` for each progress event and `on_log` for other output.
 /// Blocking; call from `spawn_blocking`.
 pub fn flash(
+    python: &Python,
     port: &str,
     image: &[u8],
     options: &Stc89Options,
@@ -254,11 +252,7 @@ pub fn flash(
     mut on_log: impl FnMut(Stream, &str),
 ) -> AppResult<()> {
     options.validate()?;
-    let python = find_python().ok_or_else(|| AppError::ToolNotFound {
-        tool: "Python 3".into(),
-        install_cmd: "see the Modules page".into(),
-    })?;
-    let script = script_path()?;
+    let script = script_file()?;
 
     let tmp = tempfile::Builder::new()
         .prefix("serial-helper-stc89-")
@@ -268,7 +262,7 @@ pub fn flash(
     std::fs::write(tmp.path(), image).map_err(|e| AppError::Generic(format!("Cannot write temp firmware: {}", e)))?;
 
     let mut cmd = python.command();
-    cmd.arg(&script)
+    cmd.arg(script.path())
         .arg("--port")
         .arg(port)
         .arg("--image")

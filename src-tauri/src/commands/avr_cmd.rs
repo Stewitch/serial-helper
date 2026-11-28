@@ -8,11 +8,12 @@ use tauri::State;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
-use crate::flash::arduino_avr::{AvrdudeConfig, AvrdudeFlasher};
+use crate::flash::arduino_avr::{self, AvrdudeConfig, AvrdudeFlasher};
 use crate::flash::avr_chips;
 use crate::flash::orchestrator::{FlashProgress, FirmwareFormat};
 use crate::firmware::{self, hex, bin};
 use crate::state::AppState;
+use crate::tools::managed;
 
 #[derive(Clone, Serialize)]
 struct FlashProgressEvent {
@@ -114,6 +115,18 @@ pub async fn flash_avr_start(
         )));
     }
 
+    let tools_dir = managed::tools_dir(&app)?;
+    let (tool, _, _) = tokio::task::spawn_blocking(move || arduino_avr::resolve_tool(&tools_dir))
+        .await
+        .map_err(|e| AppError::Generic(format!("AVRDUDE environment check failed: {e}")))?
+        .ok_or_else(|| AppError::ToolNotFound {
+            tool: "avrdude".into(),
+            install_cmd: "see the Modules page".into(),
+        })?;
+    if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(AppError::FlashCancelled);
+    }
+
     // 3. Close serial port if open (avrdude needs exclusive access)
     {
         let mgr = state.serial_manager.read();
@@ -139,7 +152,7 @@ pub async fn flash_avr_start(
     ));
 
     // 5. Run avrdude
-    let flasher = AvrdudeFlasher::new(cancel_flag.clone());
+    let flasher = AvrdudeFlasher::new(tool, cancel_flag);
     let format = match firmware.source_format {
         firmware::FirmwareFormat::Hex => FirmwareFormat::Hex,
         firmware::FirmwareFormat::Bin => FirmwareFormat::Bin,
