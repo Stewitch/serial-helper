@@ -1,13 +1,12 @@
 name: Windows Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag (for example, v0.4.0)
+        description: Tag of an existing GitHub Release (for example, v0.4.0)
         required: true
         type: string
 
@@ -15,19 +14,19 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-release-${{ inputs.tag || github.ref_name }}
+  group: windows-release-${{ inputs.tag || github.event.release.tag_name }}
 
 jobs:
   release:
     runs-on: windows-2022
     timeout-minutes: 45
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
     steps:
       - name: Check out the tagged source
         uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
 
       - name: Set up Node.js
@@ -61,7 +60,7 @@ jobs:
       - name: Build Windows x64 installers
         run: npm run tauri -- build --target x86_64-pc-windows-msvc --bundles msi,nsis -- --locked
 
-      - name: Publish installers to GitHub Releases
+      - name: Attach installers to the GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,16 +79,17 @@ jobs:
           Copy-Item -LiteralPath $msi[0].FullName -Destination $assets[0]
           Copy-Item -LiteralPath $nsis[0].FullName -Destination $assets[1]
 
-          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $existing = ($release | ConvertFrom-Json).assets.name
-            $missing = @($assets | Where-Object { (Split-Path $_ -Leaf) -cnotin $existing })
-            if ($missing.Count -gt 0) {
-              gh release upload $env:RELEASE_TAG @missing --repo $env:GITHUB_REPOSITORY
-              exit $LASTEXITCODE
-            }
-            Write-Output "Both installers are already attached to $env:RELEASE_TAG."
-          } else {
-            gh release create $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --verify-tag --generate-notes
-            exit $LASTEXITCODE
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not read the GitHub Release for $env:RELEASE_TAG."
           }
+
+          $existing = ($release | ConvertFrom-Json).assets.name
+          $missing = @($assets | Where-Object { (Split-Path $_ -Leaf) -cnotin $existing })
+          if ($missing.Count -eq 0) {
+            Write-Output "Both installers are already attached to $env:RELEASE_TAG."
+            return
+          }
+
+          gh release upload $env:RELEASE_TAG @missing --repo $env:GITHUB_REPOSITORY
+          exit $LASTEXITCODE

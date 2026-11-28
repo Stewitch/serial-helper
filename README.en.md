@@ -153,7 +153,7 @@ Installers are written to `src-tauri/target/release/bundle/`.
 npm version patch
 ```
 
-Pushing a `vX.Y.Z` tag on a commit that contains the release workflow builds the Windows x64 MSI and NSIS installers and uploads them to the matching GitHub Release. Once the workflow is on the default branch, select **Actions → Windows Release → Run workflow** to build an existing remote tag.
+Create a release on GitHub, choose or create a `vX.Y.Z` tag matching the target commit's version, then write the title and release notes and select **Publish release**. You can leave the attachments empty. GitHub Actions builds the Windows x64 MSI and NSIS installers and attaches them to the release. To fill in missing installers for an existing release, select **Actions → Windows Release → Run workflow** and enter its tag.
 
 </details>
 
